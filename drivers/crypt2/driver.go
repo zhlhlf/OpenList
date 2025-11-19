@@ -114,6 +114,7 @@ func (d *Crypt) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([
 
 	var result []model.Obj
 	for _, obj := range objs {
+		size := obj.GetSize()
 		if obj.IsDir() {
 			name, err := d.getDecryptedName(obj.GetName())
 			if err != nil {
@@ -123,9 +124,10 @@ func (d *Crypt) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([
 			if !d.ShowHidden && strings.HasPrefix(name, ".") {
 				continue
 			}
+
 			objRes := model.Object{
 				Name:     name,
-				Size:     0,
+				Size:     size,
 				Modified: obj.ModTime(),
 				IsFolder: obj.IsDir(),
 				Ctime:    obj.CreateTime(),
@@ -134,11 +136,8 @@ func (d *Crypt) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([
 			result = append(result, &objRes)
 		} else {
 			thumb, ok := model.GetThumb(obj)
-			size, err := d.cipher.DecryptedSize(obj.GetSize())
-			// 如果不进行加密文件 读取的大小应该不进行解密
-			if d.NoEncryptedFile {
-				size = obj.GetSize()
-			} else {
+			// 如果进行加密文件 读取的大小应该进行解密
+			if !d.NoEncryptedFile {
 				size, err = d.cipher.DecryptedSize(obj.GetSize())
 				if err != nil {
 					log.Warnf("DecryptedSize failed for %s ,will use original size, err:%s", path, err)
