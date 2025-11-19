@@ -289,6 +289,21 @@ func (y *Cloud189PC) Copy(ctx context.Context, srcObj, dstDir model.Obj) error {
 	return y.WaitBatchTask("COPY", resp.TaskID, time.Second)
 }
 
+func (y *Cloud189PC) Remove(ctx context.Context, obj model.Obj) error {
+	isFamily := y.isFamily()
+
+	resp, err := y.CreateBatchTask("DELETE", IF(isFamily, y.FamilyID, ""), "", nil, BatchTaskInfo{
+		FileId:   obj.GetID(),
+		FileName: obj.GetName(),
+		IsFolder: BoolToNumber(obj.IsDir()),
+	})
+	if err != nil {
+		return err
+	}
+	// 批量任务数量限制，过快会导致无法删除
+	return y.WaitBatchTask("DELETE", resp.TaskID, time.Millisecond*200)
+}
+
 func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) (newObj model.Obj, err error) {
 	overwrite := !y.storageConfig.NoOverwriteUpload
 	isFamily := y.isFamily()
