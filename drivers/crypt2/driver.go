@@ -70,7 +70,7 @@ func (d *Crypt) Init(ctx context.Context) error {
 		"password":                  p,
 		"password2":                 p2,
 		"filename_encryption":       d.FileNameEnc,
-		"directory_name_encryption": strconv.FormatBool(d.DirNameEnc),
+		"directory_name_encryption": strconv.FormatBool(d.EncryptDirName),
 		"filename_encoding":         d.FileNameEncoding,
 		"pass_bad_blocks":           "",
 	}
@@ -137,7 +137,7 @@ func (d *Crypt) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([
 		} else {
 			thumb, ok := model.GetThumb(obj)
 			// 如果进行加密文件 读取的大小应该进行解密
-			if !d.NoEncryptedFile {
+			if d.EncryptFile {
 				size, err = d.cipher.DecryptedSize(obj.GetSize())
 				if err != nil {
 					log.Warnf("DecryptedSize failed for %s ,will use original size, err:%s", path, err)
@@ -214,14 +214,14 @@ func (d *Crypt) Get(ctx context.Context, path string) (model.Obj, error) {
 	name := ""
 	if !remoteObj.IsDir() {
 		// 如果不进行加密文件 读取的大小应该不进行解密
-		if d.NoEncryptedFile {
-			size = remoteObj.GetSize()
-		} else {
+		if d.EncryptFile {
 			size, err = d.cipher.DecryptedSize(remoteObj.GetSize())
 			if err != nil {
 				log.Warnf("DecryptedSize failed for %s ,will use original size, err:%s", path, err)
 				size = remoteObj.GetSize()
 			}
+		} else {
+			size = remoteObj.GetSize()
 		}
 
 		name, err = d.getDecryptedName(remoteObj.GetName())
@@ -260,7 +260,7 @@ func (d *Crypt) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (
 	if err != nil {
 		return nil, err
 	}
-	if(d.NoEncryptedFile) {
+	if(!d.EncryptFile) {
 		return remoteLink, nil
 	}
 	remoteSize := remoteLink.ContentLength
@@ -397,8 +397,7 @@ func (d *Crypt) Put(ctx context.Context, dstDir model.Obj, streamer model.FileSt
 	var reader io.Reader = streamer
 	size := streamer.GetSize()
 
-	// Encrypt the data if NoEncryptedFile is false
-	if !d.NoEncryptedFile {
+	if d.EncryptFile {
 		wrappedIn, err := d.cipher.EncryptData(streamer)
 		if err != nil {
 			return fmt.Errorf("failed to EncryptData: %w", err)

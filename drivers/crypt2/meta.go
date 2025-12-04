@@ -20,8 +20,8 @@ type Addition struct {
 
 	Thumbnail bool `json:"thumbnail" required:"true" default:"false" help:"enable thumbnail which pre-generated under .thumbnails folder"`
 	ShowHidden bool `json:"show_hidden"  default:"true" required:"false" help:"show hidden directories and files"`
-	DirNameEnc bool   `json:"directory_name_encryption"  default:"false"`
-	NoEncryptedFile bool   `json:"no_encrypted_file"  default:"false"`
+	EncryptDirName bool   `json:"directory_name_encryption"  default:"true"`
+	EncryptFile bool   `json:"encrypted_file"  default:"false"`
 }
 
 var config = driver.Config{
