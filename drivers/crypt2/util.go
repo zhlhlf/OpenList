@@ -48,7 +48,9 @@ func (d *Crypt) getActualPathForRemote(path string, isFolder bool) (string, erro
 // 加密文件名或文件夹名
 // isDir: true 表示文件夹，false 表示文件（保留扩展名不变）
 func (d *Crypt) getEncryptedName(name string, isDir bool) (string, error) {
-	if (!d.EncryptDirName) return name, nil
+    if !d.EncryptDirName {
+        return name, nil
+    }
     if isDir {
         encrypted := d.cipher.EncryptDirName(name)
         return encrypted, nil
@@ -61,7 +63,9 @@ func (d *Crypt) getEncryptedName(name string, isDir bool) (string, error) {
 
 // 解密文件名or文件夹名（文件保留扩展名不变）
 func (d *Crypt) getDecryptedName(filename string) (string, error) {
-	if (!d.EncryptDirName) return filename, nil
+    if !d.EncryptDirName {
+        return filename, nil
+    }
     ext := filepath.Ext(filename)
     base := filename[:len(filename)-len(ext)]
     decrypted,err := d.cipher.DecryptFileName(base)

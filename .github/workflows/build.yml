@@ -5,7 +5,12 @@ on:
     branches: [ "main" ]
 
   workflow_dispatch:
-
+    inputs:
+      lite:
+        description: 'Build lite?'
+        required: false
+        default: 'false'
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -38,7 +43,12 @@ jobs:
         go-version: "1.24"
 
     - name: Setup web
-      run: bash build.sh dev web
+      run: |
+        if [ "${{ github.event.inputs.lite }}" = "true" ]; then
+          bash build.sh release web lite
+        else
+          bash build.sh release web
+        fi
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
