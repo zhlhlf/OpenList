@@ -29,6 +29,7 @@ var config = driver.Config{
 	LocalSort:   true,
 	OnlyProxy:   false,
 	NoCache:     true,
+	NoLinkURL:   false,
 	DefaultRoot: "/",
 }
 
@@ -36,4 +37,8 @@ func init() {
 	op.RegisterDriver(func() driver.Driver {
 		return &Crypt{}
 	})
+}
+
+func SetNoLinkURL(value bool) {
+    config.NoLinkURL = value
 }

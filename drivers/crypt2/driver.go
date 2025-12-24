@@ -79,7 +79,7 @@ func (d *Crypt) Init(ctx context.Context) error {
 		return fmt.Errorf("failed to create Cipher: %w", err)
 	}
 	d.cipher = c
-
+	SetNoLinkURL(d.EncryptFile)
 	return nil
 }
 
@@ -101,6 +101,7 @@ func (d *Crypt) Drop(ctx context.Context) error {
 }
 
 func (d *Crypt) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
+
 	path := dir.GetPath()
 	//return d.list(ctx, d.RemotePath, path)
 	//remoteFull
@@ -252,6 +253,7 @@ func (d *Crypt) Get(ctx context.Context, path string) (model.Obj, error) {
 const fileHeaderSize = 32
 
 func (d *Crypt) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+
 	dstDirActualPath, err := d.getActualPathForRemote(file.GetPath(), false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert path to remote path: %w", err)
