@@ -161,7 +161,7 @@ func (d *Crypt) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([
 				Ctime:    obj.CreateTime(),
 				// discarding hash as it's encrypted
 			}
-			if d.Thumbnail && thumb == "" {
+			if d.Thumbnail && d.EncryptFile {
 				thumbPath := stdpath.Join(args.ReqPath, ".thumbnails", name+".webp")
 				thumb = fmt.Sprintf("%s/d%s?sign=%s",
 					common.GetApiUrl(ctx),
