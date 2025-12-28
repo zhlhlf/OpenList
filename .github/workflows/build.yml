@@ -5,12 +5,7 @@ on:
     branches: [ "main" ]
 
   workflow_dispatch:
-    inputs:
-      lite:
-        description: 'Build lite?'
-        required: false
-        default: 'false'
-        type: boolean
+
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -44,11 +39,8 @@ jobs:
 
     - name: Setup web
       run: |
-        if [ "${{ github.event.inputs.lite }}" = "true" ]; then
-          bash build.sh release web lite
-        else
-          bash build.sh release web
-        fi
+        export FRONTEND_REPO=zhlhlf
+        bash build.sh release web lite
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
