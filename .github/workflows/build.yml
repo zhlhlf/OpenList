@@ -39,7 +39,7 @@ jobs:
 
     - name: Setup web
       run: |
-        export FRONTEND_REPO=zhlhlf
+        export FRONTEND_REPO=zhlhlf/OpenList-Frontend
         bash build.sh release web lite
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
