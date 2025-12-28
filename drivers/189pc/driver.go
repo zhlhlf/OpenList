@@ -357,17 +357,14 @@ func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.Fil
 				        break // 找到文件，跳出循环
 				    }
 				
-				    if err != errs.ObjectNotFound {
-				        _ = y.Delete(context.TODO(), "", file) // 尝试删除不完整文件
-				        return
-				    }
-				
-				    // 最后一次尝试失败 退出吧
+				    // 最后一次尝试失败 删除退出吧
 				    if attempt == maxRetries {
-				        return
+				        if err != errs.ObjectNotFound {
+				       		_ = y.Delete(context.TODO(), "", file) // 尝试删除不完整文件
+				        	return
+				    	}
 				    }
 				}
-
 
 				// 重命名转存文件
 				newObj, err = y.Rename(context.TODO(), file, srcName)
