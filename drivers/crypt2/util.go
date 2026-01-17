@@ -48,26 +48,37 @@ func (d *Crypt) getActualPathForRemote(path string, isFolder bool) (string, erro
 // 加密文件名或文件夹名
 // isDir: true 表示文件夹，false 表示文件（保留扩展名不变）
 func (d *Crypt) getEncryptedName(name string, isDir bool) (string, error) {
-    if !d.EncryptDirName {
-        return name, nil
+    
+    switch {
+
+	case !d.EncryptDirName:
+		return name, nil
+    case isDir:
+        return d.cipher.EncryptDirName(name), nil
+    case d.Suffix != "":
+        return d.cipher.EncryptDirName(name) + d.Suffix, nil
+    default:
+        ext := filepath.Ext(name)
+        encrypted := d.cipher.EncryptFileName(name[:len(name)-len(ext)])
+	    return encrypted + ext, nil	
     }
-    if isDir {
-        encrypted := d.cipher.EncryptDirName(name)
-        return encrypted, nil
-    }
-    ext := filepath.Ext(name)
-    base := name[:len(name)-len(ext)]
-    encrypted := d.cipher.EncryptFileName(base)
-    return encrypted + ext, nil
 }
 
 // 解密文件名or文件夹名（文件保留扩展名不变）
-func (d *Crypt) getDecryptedName(filename string) (string, error) {
-    if !d.EncryptDirName {
-        return filename, nil
+func (d *Crypt) getDecryptedName(filename string, isDir bool) (string, error) {
+
+    switch {
+
+	case !d.EncryptDirName:
+		return filename, nil
+    case isDir:
+        return d.cipher.DecryptDirName(filename)
+	case d.Suffix != "":
+        return d.cipher.DecryptDirName(filename[:len(filename)-len(d.Suffix)])
+    default:
+        // 只获取一次扩展名
+        ext := filepath.Ext(filename)
+        decrypted, err := d.cipher.DecryptFileName(filename[:len(filename)-len(ext)])
+        return decrypted + ext, err
     }
-    ext := filepath.Ext(filename)
-    base := filename[:len(filename)-len(ext)]
-    decrypted,err := d.cipher.DecryptFileName(base)
-    return decrypted + ext, err
 }

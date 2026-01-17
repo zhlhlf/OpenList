@@ -75,13 +75,15 @@ func (y *Cloud189PC) Init(ctx context.Context) (err error) {
 				"Referer": WEB_URL,
 			})
 		}
-
-		// 避免重复登陆
-		identity := utils.GetMD5EncodeStr(y.Username + y.Password)
-		if !y.isLogin() || y.identity != identity {
-			y.identity = identity
-			if err = y.login(); err != nil {
-				return
+		if y.AccessToken != "" {
+			err = y.useAccessTokenAndInit(y.AccessToken)
+		}else {
+			identity := utils.GetMD5EncodeStr(y.Username + y.Password)
+			if !y.isLogin() || y.identity != identity {
+				y.identity = identity
+				if err = y.login(); err != nil {
+					return
+				}
 			}
 		}
 	}

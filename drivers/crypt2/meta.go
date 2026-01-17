@@ -22,23 +22,11 @@ type Addition struct {
 	ShowHidden bool `json:"show_hidden"  default:"true" required:"false" help:"show hidden directories and files"`
 	EncryptDirName bool   `json:"directory_name_encryption"  default:"true"`
 	EncryptFile bool   `json:"encrypted_file"  default:"false"`
-}
-
-var config = driver.Config{
-	Name:        "Crypt2",
-	LocalSort:   true,
-	OnlyProxy:   false,
-	NoCache:     true,
-	NoLinkURL:   false,
-	DefaultRoot: "/",
+	Suffix string   `json:"suffix"  required:"false" default:"" help:"The suffix of the encrypted file, blank is to keep the original suffix."`
 }
 
 func init() {
 	op.RegisterDriver(func() driver.Driver {
 		return &Crypt{}
 	})
-}
-
-func SetNoLinkURL(value bool) {
-    config.NoLinkURL = value
 }

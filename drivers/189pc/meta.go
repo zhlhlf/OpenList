@@ -6,8 +6,9 @@ import (
 )
 
 type Addition struct {
-	Username string `json:"username" required:"true"`
-	Password string `json:"password" required:"true"`
+	Username string `json:"username" required:"false"`
+	Password string `json:"password" required:"false"`
+	AccessToken string `json:"access_token" required:"false"`
 	VCode    string `json:"validate_code"`
 	driver.RootID
 	OrderBy        string `json:"order_by" type:"select" options:"filename,filesize,lastOpTime" default:"filename"`

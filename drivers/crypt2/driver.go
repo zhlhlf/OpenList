@@ -30,12 +30,23 @@ type Crypt struct {
 	Addition
 	cipher        *rcCrypt.Cipher
 	remoteStorage driver.Driver
+	config        driver.Config
 }
 
 const obfuscatedPrefix = "___Obfuscated___"
 
 func (d *Crypt) Config() driver.Config {
-	return config
+	if d.config.Name == "" {
+		d.config = driver.Config{
+			Name:        "Crypt2",
+			LocalSort:   true,
+			OnlyProxy:   false,
+			NoCache:     true,
+			NoLinkURL:   d.EncryptFile,
+			DefaultRoot: "/",
+		}
+	}
+	return d.config
 }
 
 func (d *Crypt) GetAddition() driver.Additional {
@@ -66,7 +77,7 @@ func (d *Crypt) Init(ctx context.Context) error {
 
 	p, _ := strings.CutPrefix(d.Password, obfuscatedPrefix)
 	p2, _ := strings.CutPrefix(d.Salt, obfuscatedPrefix)
-	config := configmap.Simple{
+	Rconfig := configmap.Simple{
 		"password":                  p,
 		"password2":                 p2,
 		"filename_encryption":       d.FileNameEnc,
@@ -74,12 +85,11 @@ func (d *Crypt) Init(ctx context.Context) error {
 		"filename_encoding":         d.FileNameEncoding,
 		"pass_bad_blocks":           "",
 	}
-	c, err := rcCrypt.NewCipher(config)
+	c, err := rcCrypt.NewCipher(Rconfig)
 	if err != nil {
 		return fmt.Errorf("failed to create Cipher: %w", err)
 	}
 	d.cipher = c
-	SetNoLinkURL(d.EncryptFile)
 	return nil
 }
 
@@ -117,7 +127,7 @@ func (d *Crypt) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([
 	for _, obj := range objs {
 		size := obj.GetSize()
 		if obj.IsDir() {
-			name, err := d.getDecryptedName(obj.GetName())
+			name, err := d.getDecryptedName(obj.GetName(), true)
 			if err != nil {
 				//filter illegal files
 				continue
@@ -145,7 +155,7 @@ func (d *Crypt) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([
 					size = obj.GetSize()
 				}
 			}
-			name, err := d.getDecryptedName(obj.GetName())
+			name, err := d.getDecryptedName(obj.GetName(), false)
 			if err != nil {
 				//filter illegal files
 				continue
@@ -225,14 +235,14 @@ func (d *Crypt) Get(ctx context.Context, path string) (model.Obj, error) {
 			size = remoteObj.GetSize()
 		}
 
-		name, err = d.getDecryptedName(remoteObj.GetName())
+		name, err = d.getDecryptedName(remoteObj.GetName(), false)
 
 		if err != nil {
 			log.Warnf("DecryptFileName failed for %s ,will use original name, err:%s", path, err)
 			name = remoteObj.GetName()
 		}
 	} else {
-		name, err = d.getDecryptedName(remoteObj.GetName())
+		name, err = d.getDecryptedName(remoteObj.GetName(), true)
 		if err != nil {
 			log.Warnf("DecryptDirName failed for %s ,will use original name, err:%s", path, err)
 			name = remoteObj.GetName()

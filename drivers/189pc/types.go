@@ -136,6 +136,12 @@ type AppSessionResp struct {
 	RefreshToken string `json:"refreshToken"`
 }
 
+// 刷新Token返回
+type RefreshTokenResp struct {
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken"`
+}
+
 // 家庭云账户
 type FamilyInfoListResp struct {
 	FamilyInfoResp []FamilyInfoResp `json:"familyInfoResp"`

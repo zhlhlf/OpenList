@@ -333,6 +333,7 @@ func (y *Cloud189PC) login() (err error) {
 		return
 	}
 	y.tokenInfo = &tokenInfo
+	y.updateValue(&y.AccessToken, tokenInfo.AccessToken)
 	return
 }
 
@@ -444,7 +445,6 @@ func (y *Cloud189PC) refreshSession() (err error) {
 	if err != nil {
 		return err
 	}
-
 	// 错误影响正常访问，下线该储存
 	defer func() {
 		if err != nil {
@@ -454,6 +454,9 @@ func (y *Cloud189PC) refreshSession() (err error) {
 	}()
 
 	if erron.HasError() {
+		if y.Username == "" && y.Password == "" {
+			return fmt.Errorf("access_token invalid or expired")
+		}
 		if erron.ResCode == "UserInvalidOpenToken" {
 			if err = y.login(); err != nil {
 				return err
@@ -465,6 +468,25 @@ func (y *Cloud189PC) refreshSession() (err error) {
 	return
 }
 
+func (y *Cloud189PC) updateValue(str *string, str2 string)  {
+	*str = str2
+}
+
+func (y *Cloud189PC) useAccessTokenAndInit(accessToken string) error {
+	y.tokenInfo = &AppSessionResp{}
+	y.tokenInfo.AccessToken = accessToken
+	// 错误影响正常访问，下线该储存
+	var err error
+	defer func() {
+		if err != nil {
+			y.GetStorage().SetStatus(fmt.Sprintf("%+v", err.Error()))
+			op.MustSaveDriverStorage(y)
+		}
+	}()
+
+	err = y.refreshSession()
+	return err
+}
 
 // 快传
 func (y *Cloud189PC) FastUpload(ctx context.Context, dstDir model.Obj, file model.FileStreamer, up driver.UpdateProgress, isFamily bool, overwrite bool) (model.Obj, error) {

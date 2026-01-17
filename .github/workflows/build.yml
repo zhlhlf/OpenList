@@ -1,8 +1,8 @@
-name: Test Build
+name: Build
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "new" ]
 
   workflow_dispatch:
 
@@ -39,7 +39,8 @@ jobs:
 
     - name: Setup web
       run: |
-        export FRONTEND_REPO=zhlhlf/OpenList-Frontend
+        # 备用吧  目前前端功能还没有到需要的时刻
+        # export FRONTEND_REPO=zhlhlf/OpenList-Frontend
         bash build.sh release web lite
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
