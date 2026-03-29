@@ -21,7 +21,7 @@ type Addition struct {
 	Thumbnail bool `json:"thumbnail" required:"true" default:"false" help:"enable thumbnail which pre-generated under .thumbnails folder"`
 	ShowHidden bool `json:"show_hidden"  default:"true" required:"false" help:"show hidden directories and files"`
 	EncryptDirName bool   `json:"directory_name_encryption"  default:"true"`
-	EncryptFile bool   `json:"encrypted_file"  default:"false"`
+	EncryptFile string   `json:"encrypted_file" type:"select" required:"true" options:"false,rclone,aes_ctr" default:"false"`
 	Suffix string   `json:"suffix"  required:"false" default:"" help:"The suffix of the encrypted file, blank is to keep the original suffix."`
 }
 
