@@ -172,16 +172,16 @@ func (e *aesCTRFileEncryptor) WrapLink(ctx context.Context, remoteLink *model.Li
 			if length <= 0 {
 				return io.NopCloser(bytes.NewReader(nil)), nil
 			}
-			remoteReader, err := rrf.RangeRead(ctx, http_range.Range{Start: start, Length: length})
+			reader, err := e.cipher.DecryptDataSeek(ctx, func(ctx context.Context, offset, limit int64) (io.ReadCloser, error) {
+				return rrf.RangeRead(ctx, http_range.Range{Start: offset, Length: limit})
+			}, start, length)
 			if err != nil {
 				return nil, err
 			}
-			streamReader, err := e.cipher.DecryptReaderAt(remoteReader, start)
-			if err != nil {
-				_ = remoteReader.Close()
-				return nil, err
+			if seeker, ok := reader.(*aesCTRDecrypter); ok && seeker.size < 0 {
+				seeker.size = decryptedSize
 			}
-			return streamReader, nil
+			return reader, nil
 		}),
 		SyncClosers:      utils.NewSyncClosers(remoteLink),
 		RequireReference: remoteLink.RequireReference,
