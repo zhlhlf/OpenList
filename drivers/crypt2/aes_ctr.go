@@ -16,7 +16,6 @@ import (
 const (
 	fileEncryptionFalse  = "false"
 	fileEncryptionRclone = "rclone"
-	fileEncryptionAESECB = "aes_ecb"
 	fileEncryptionAESCTR = "aes_ctr"
 	aesBlockSize         = aes.BlockSize
 )
