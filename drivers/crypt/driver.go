@@ -104,7 +104,7 @@ func (d *Crypt) initFileEncryptor(password, salt string) (fileEncryptor, error) 
 		return &noopFileEncryptor{}, nil
 	case fileEncryptionRclone:
 		return &rcloneFileEncryptor{cipher: d.cipher}, nil
-	case fileEncryptionAESECB, fileEncryptionAESCTR:
+	case fileEncryptionAESCTR:
 		aesCipher, err := newAESCTR(password, salt)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create AES stream cipher: %w", err)
