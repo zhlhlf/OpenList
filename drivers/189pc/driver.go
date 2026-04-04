@@ -12,7 +12,6 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/errs"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
-	"github.com/OpenListTeam/OpenList/v4/pkg/cron"
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 	"github.com/go-resty/resty/v2"
 	"github.com/google/uuid"
@@ -22,12 +21,12 @@ type Cloud189PC struct {
 	model.Storage
 	Addition
 
+	identity string
+
 	client *resty.Client
 
-	loginParam  *LoginParam
-	qrcodeParam *QRLoginParam
-
-	tokenInfo *AppSessionResp
+	loginParam *LoginParam
+	tokenInfo  *AppSessionResp
 
 	uploadThread int
 
@@ -36,7 +35,6 @@ type Cloud189PC struct {
 
 	storageConfig driver.Config
 	ref           *Cloud189PC
-	cron          *cron.Cron
 }
 
 func (y *Cloud189PC) Config() driver.Config {
@@ -52,17 +50,9 @@ func (y *Cloud189PC) GetAddition() driver.Additional {
 
 func (y *Cloud189PC) Init(ctx context.Context) (err error) {
 	y.storageConfig = config
-	if y.isFamily() {
-		// 兼容旧上传接口
-		if y.Addition.RapidUpload || y.Addition.UploadMethod == "old" {
-			y.storageConfig.NoOverwriteUpload = true
-		}
-	} else {
-		// 家庭云转存，不支持覆盖上传
-		if y.Addition.FamilyTransfer {
-			y.storageConfig.NoOverwriteUpload = true
-		}
-	}
+	//不覆盖上传
+	y.storageConfig.NoOverwriteUpload = true
+
 	// 处理个人云和家庭云参数
 	if y.isFamily() && y.RootFolderID == "-11" {
 		y.RootFolderID = ""
@@ -85,23 +75,17 @@ func (y *Cloud189PC) Init(ctx context.Context) (err error) {
 				"Referer": WEB_URL,
 			})
 		}
-
-		// 先尝试用Token刷新，之后尝试登陆
-		if y.Addition.RefreshToken != "" {
-			y.tokenInfo = &AppSessionResp{RefreshToken: y.Addition.RefreshToken}
-			if err = y.refreshToken(); err != nil {
-				return err
-			}
-		} else {
-			if err = y.login(); err != nil {
-				return err
+		if y.AccessToken != "" {
+			err = y.useAccessTokenAndInit(y.AccessToken)
+		}else {
+			identity := utils.GetMD5EncodeStr(y.Username + y.Password)
+			if !y.isLogin() || y.identity != identity {
+				y.identity = identity
+				if err = y.login(); err != nil {
+					return
+				}
 			}
 		}
-
-		// 初始化并启动 cron 任务
-		y.cron = cron.NewCron(time.Duration(time.Minute * 5))
-		// 每5分钟执行一次 keepAlive
-		y.cron.Do(y.keepAlive)
 	}
 
 	// 处理家庭云ID
@@ -124,7 +108,7 @@ func (y *Cloud189PC) Init(ctx context.Context) (err error) {
 			utils.Log.Errorf("cleanFamilyTransferFolderError:%s", err)
 		}
 	})
-	return err
+	return
 }
 
 func (d *Cloud189PC) InitReference(storage driver.Driver) error {
@@ -138,10 +122,6 @@ func (d *Cloud189PC) InitReference(storage driver.Driver) error {
 
 func (y *Cloud189PC) Drop(ctx context.Context) error {
 	y.ref = nil
-	if y.cron != nil {
-		y.cron.Stop()
-		y.cron = nil
-	}
 	return nil
 }
 
@@ -189,7 +169,6 @@ func (y *Cloud189PC) Link(ctx context.Context, file model.Obj, args model.LinkAr
 	if res.StatusCode() == 302 {
 		downloadUrl.URL = res.Header().Get("location")
 	}
-
 	like := &model.Link{
 		URL: downloadUrl.URL,
 		Header: http.Header{
@@ -305,6 +284,7 @@ func (y *Cloud189PC) Copy(ctx context.Context, srcObj, dstDir model.Obj) error {
 		FileName: srcObj.GetName(),
 		IsFolder: BoolToNumber(srcObj.IsDir()),
 	})
+
 	if err != nil {
 		return err
 	}
@@ -327,37 +307,25 @@ func (y *Cloud189PC) Remove(ctx context.Context, obj model.Obj) error {
 }
 
 func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) (newObj model.Obj, err error) {
-	overwrite := true
+	overwrite := !y.storageConfig.NoOverwriteUpload
 	isFamily := y.isFamily()
-
-	// 响应时间长,按需启用
-	if y.Addition.RapidUpload && !stream.IsForceStreamUpload() {
-		if newObj, err := y.RapidUpload(ctx, dstDir, stream, isFamily, overwrite); err == nil {
-			return newObj, nil
-		}
-	}
-
 	uploadMethod := y.UploadMethod
-	if stream.IsForceStreamUpload() {
-		uploadMethod = "stream"
-	}
-
-	// 旧版上传家庭云也有限制
-	if uploadMethod == "old" {
-		return y.OldUpload(ctx, dstDir, stream, up, isFamily, overwrite)
-	}
-
 	// 开启家庭云转存
 	if !isFamily && y.FamilyTransfer {
 		// 修改上传目标为家庭云文件夹
 		transferDstDir := dstDir
 		dstDir = y.familyTransferFolder
 
-		// 使用临时文件名
+		// 使用临时文件名 不然一些特殊名字转存不了
 		srcName := stream.GetName()
+		parts := strings.Split(srcName, ".")
+		lastPart := parts[len(parts)-1]
+		if len(parts) == 1 {
+			lastPart = "zhlhlf" // 兜底
+		}
 		stream = &WrapFileStreamer{
 			FileStreamer: stream,
-			Name:         fmt.Sprintf("0%s.transfer", uuid.NewString()),
+			Name:         fmt.Sprintf("00-zhlhlf-00--%s.%s", uuid.NewString(), lastPart),
 		}
 
 		// 使用家庭云上传
@@ -377,14 +345,27 @@ func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.Fil
 					return
 				}
 
-				// 查找转存文件
+				// 循环查找转存文件，最多尝试5次，每次间隔200ms
+				const maxRetries = 5
 				var file *Cloud189File
-				file, err = y.findFileByName(context.TODO(), newObj.GetName(), transferDstDir.GetID(), false)
-				if err != nil {
-					if err == errs.ObjectNotFound {
-						err = fmt.Errorf("unknown error: No transfer file obtained %s", newObj.GetName())
-					}
-					return
+
+				for attempt := 1; attempt <= maxRetries; attempt++ {
+				    if attempt > 1 {
+				        time.Sleep(200 * time.Millisecond) // 等待天翼云盘同步
+				    }
+				
+				    file, err = y.findFileByName(context.TODO(), newObj.GetName(), transferDstDir.GetID(), false)
+				    if err == nil {
+				        break // 找到文件，跳出循环
+				    }
+				
+				    // 最后一次尝试失败 删除退出吧
+				    if attempt == maxRetries {
+				        if err != errs.ObjectNotFound {
+				       		_ = y.Delete(context.TODO(), "", file) // 尝试删除不完整文件
+				        	return
+				    	}
+				    }
 				}
 
 				// 重命名转存文件
@@ -399,15 +380,10 @@ func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.Fil
 	}
 
 	switch uploadMethod {
-	case "rapid":
-		return y.FastUpload(ctx, dstDir, stream, up, isFamily, overwrite)
-	case "stream":
-		if stream.GetSize() == 0 {
+		case "rapid":
 			return y.FastUpload(ctx, dstDir, stream, up, isFamily, overwrite)
-		}
-		fallthrough
-	default:
-		return y.StreamUpload(ctx, dstDir, stream, up, isFamily, overwrite)
+		default:
+			return y.FastUpload(ctx, dstDir, stream, up, isFamily, overwrite)
 	}
 }
 

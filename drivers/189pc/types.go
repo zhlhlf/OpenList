@@ -68,27 +68,6 @@ func (e *RespErr) Error() string {
 	return ""
 }
 
-type BaseLoginParam struct {
-	// 请求头参数
-	Lt    string
-	ReqId string
-
-	// 表单参数
-	ParamId string
-
-	// 验证码
-	CaptchaToken string
-}
-
-// QRLoginParam 用于暂存二维码登录过程中的参数
-type QRLoginParam struct {
-	BaseLoginParam
-
-	UUID       string `json:"uuid"`
-	EncodeUUID string `json:"encodeuuid"`
-	EncryUUID  string `json:"encryuuid"`
-}
-
 // 登陆需要的参数
 type LoginParam struct {
 	// 加密后的用户名和密码
@@ -98,7 +77,15 @@ type LoginParam struct {
 	// rsa密钥
 	jRsaKey string
 
-	BaseLoginParam
+	// 请求头参数
+	Lt    string
+	ReqId string
+
+	// 表单参数
+	ParamId string
+
+	// 验证码
+	CaptchaToken string
 }
 
 // 登陆加密相关
@@ -149,6 +136,12 @@ type AppSessionResp struct {
 	RefreshToken string `json:"refreshToken"`
 }
 
+// 刷新Token返回
+type RefreshTokenResp struct {
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken"`
+}
+
 // 家庭云账户
 type FamilyInfoListResp struct {
 	FamilyInfoResp []FamilyInfoResp `json:"familyInfoResp"`
@@ -161,6 +154,24 @@ type FamilyInfoResp struct {
 	Type       int    `json:"type"`
 	UseFlag    int    `json:"useFlag"`
 	UserRole   int    `json:"userRole"`
+}
+
+type CapacityResp struct {
+	ResCode           int    `json:"res_code"`
+	ResMessage        string `json:"res_message"`
+	Account           string `json:"account"`
+	CloudCapacityInfo struct {
+		FreeSize     int64 `json:"freeSize"`
+		MailUsedSize int64 `json:"mail189UsedSize"`
+		TotalSize    int64 `json:"totalSize"`
+		UsedSize     int64 `json:"usedSize"`
+	} `json:"cloudCapacityInfo"`
+	FamilyCapacityInfo struct {
+		FreeSize  int64 `json:"freeSize"`
+		TotalSize int64 `json:"totalSize"`
+		UsedSize  int64 `json:"usedSize"`
+	} `json:"familyCapacityInfo"`
+	TotalSize uint64 `json:"totalSize"`
 }
 
 /*文件部分*/
@@ -408,22 +419,4 @@ func (p Params) Encode() string {
 		buf.WriteString(p[keys[i]])
 	}
 	return buf.String()
-}
-
-type CapacityResp struct {
-	ResCode           int    `json:"res_code"`
-	ResMessage        string `json:"res_message"`
-	Account           string `json:"account"`
-	CloudCapacityInfo struct {
-		FreeSize     int64 `json:"freeSize"`
-		MailUsedSize int64 `json:"mail189UsedSize"`
-		TotalSize    int64 `json:"totalSize"`
-		UsedSize     int64 `json:"usedSize"`
-	} `json:"cloudCapacityInfo"`
-	FamilyCapacityInfo struct {
-		FreeSize  int64 `json:"freeSize"`
-		TotalSize int64 `json:"totalSize"`
-		UsedSize  int64 `json:"usedSize"`
-	} `json:"familyCapacityInfo"`
-	TotalSize uint64 `json:"totalSize"`
 }

@@ -1,16 +1,12 @@
 package crypt
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	stdpath "path"
-	"regexp"
 	"strings"
-	"sync"
-
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/errs"
 	"github.com/OpenListTeam/OpenList/v4/internal/fs"
@@ -30,21 +26,38 @@ import (
 type Crypt struct {
 	model.Storage
 	Addition
-	cipher *rcCrypt.Cipher
+	cipher        *rcCrypt.Cipher
+	fileEncryptor fileEncryptor
+	remoteStorage driver.Driver
+	config        driver.Config
 }
 
 const obfuscatedPrefix = "___Obfuscated___"
 
 func (d *Crypt) Config() driver.Config {
-	return config
+	if d.config.Name == "" {
+		d.config = driver.Config{
+			Name:        "Crypt",
+			LocalSort:   true,
+			OnlyProxy:   false,
+			NoCache:     true,
+			NoLinkURL:   d.fileEncryptor != nil && d.fileEncryptor.Enabled(),
+			DefaultRoot: "/",
+		}
+	}
+	return d.config
 }
 
 func (d *Crypt) GetAddition() driver.Additional {
 	return &d.Addition
 }
 
+func (Addition) GetRootPath() string {
+	return "/"
+}
+
 func (d *Crypt) Init(ctx context.Context) error {
-	// obfuscate credentials if it's updated or just created
+	//obfuscate credentials if it's updated or just created
 	err := d.updateObfusParm(&d.Password)
 	if err != nil {
 		return fmt.Errorf("failed to obfuscate password: %w", err)
@@ -54,32 +67,56 @@ func (d *Crypt) Init(ctx context.Context) error {
 		return fmt.Errorf("failed to obfuscate salt: %w", err)
 	}
 
-	isCryptExt := regexp.MustCompile(`^[.][A-Za-z0-9-_]{2,}$`).MatchString
-	if !isCryptExt(d.EncryptedSuffix) {
-		return fmt.Errorf("EncryptedSuffix is Illegal")
-	}
 	d.FileNameEncoding = utils.GetNoneEmpty(d.FileNameEncoding, "base64")
-	d.EncryptedSuffix = utils.GetNoneEmpty(d.EncryptedSuffix, ".bin")
-	d.RemotePath = utils.FixAndCleanPath(d.RemotePath)
+	d.EncryptFile = utils.GetNoneEmpty(d.EncryptFile, fileEncryptionFalse)
+
+	op.MustSaveDriverStorage(d)
+
+	//need remote storage exist
+	storage, err := fs.GetStorage(d.RemotePath, &fs.GetStoragesArgs{})
+	if err != nil {
+		return fmt.Errorf("can't find remote storage: %w", err)
+	}
+	d.remoteStorage = storage
 
 	p, _ := strings.CutPrefix(d.Password, obfuscatedPrefix)
 	p2, _ := strings.CutPrefix(d.Salt, obfuscatedPrefix)
-	config := configmap.Simple{
+	Rconfig := configmap.Simple{
 		"password":                  p,
 		"password2":                 p2,
 		"filename_encryption":       d.FileNameEnc,
-		"directory_name_encryption": d.DirNameEnc,
+		"directory_name_encryption": strconv.FormatBool(d.EncryptDirName),
 		"filename_encoding":         d.FileNameEncoding,
-		"suffix":                    d.EncryptedSuffix,
 		"pass_bad_blocks":           "",
 	}
-	c, err := rcCrypt.NewCipher(config)
+	c, err := rcCrypt.NewCipher(Rconfig)
 	if err != nil {
 		return fmt.Errorf("failed to create Cipher: %w", err)
 	}
 	d.cipher = c
-
+	d.fileEncryptor, err = d.initFileEncryptor(p, p2)
+	if err != nil {
+		return err
+	}
+	d.config = driver.Config{}
 	return nil
+}
+
+func (d *Crypt) initFileEncryptor(password, salt string) (fileEncryptor, error) {
+	switch d.EncryptFile {
+	case fileEncryptionFalse:
+		return &noopFileEncryptor{}, nil
+	case fileEncryptionRclone:
+		return &rcloneFileEncryptor{cipher: d.cipher}, nil
+	case fileEncryptionAESCTR:
+		aesCipher, err := newAESCTR(password, salt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create AES stream cipher: %w", err)
+		}
+		return &aesCTRFileEncryptor{cipher: aesCipher}, nil
+	default:
+		return nil, fmt.Errorf("unsupported encrypted_file mode: %s", d.EncryptFile)
+	}
 }
 
 func (d *Crypt) updateObfusParm(str *string) error {
@@ -99,268 +136,274 @@ func (d *Crypt) Drop(ctx context.Context) error {
 	return nil
 }
 
+func (d *Crypt) getDecryptedFileSize(ctx context.Context, remoteMountPath string, encryptedSize int64) (int64, error) {
+	if d.fileEncryptor == nil || !d.fileEncryptor.Enabled() {
+		return encryptedSize, nil
+	}
+	return d.fileEncryptor.DecryptSize(ctx, encryptedSize, func(ctx context.Context, start, length int64) (io.ReadCloser, error) {
+		remoteLink, _, err := fs.Link(ctx, remoteMountPath, model.LinkArgs{})
+		if err != nil {
+			return nil, err
+		}
+		remoteSize := remoteLink.ContentLength
+		if remoteSize <= 0 {
+			remoteSize = encryptedSize
+		}
+		rrf, err := stream.GetRangeReaderFromLink(remoteSize, remoteLink)
+		if err != nil {
+			_ = remoteLink.Close()
+			return nil, err
+		}
+		rc, err := rrf.RangeRead(ctx, streamRange(start, length))
+		if err != nil {
+			_ = remoteLink.Close()
+			return nil, err
+		}
+		return utils.NewReadCloser(rc, func() error {
+			closers := utils.NewClosers(rc, remoteLink)
+			return (&closers).Close()
+		}), nil
+	})
+}
+
+func streamRange(start, length int64) http_range.Range {
+	return http_range.Range{Start: start, Length: length}
+}
+
 func (d *Crypt) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
-	remoteFullPath := dir.GetPath()
-	objs, err := fs.List(ctx, remoteFullPath, &fs.ListArgs{NoLog: true, Refresh: args.Refresh})
+
+	path := dir.GetPath()
+	//return d.list(ctx, d.RemotePath, path)
+	//remoteFull
+
+	objs, err := fs.List(ctx, d.getPathForRemote(path, true), &fs.ListArgs{NoLog: true, Refresh: args.Refresh})
 	// the obj must implement the model.SetPath interface
 	// return objs, err
 	if err != nil {
 		return nil, err
 	}
 
-	result := make([]model.Obj, 0, len(objs))
+	var result []model.Obj
 	for _, obj := range objs {
 		size := obj.GetSize()
-		mask := model.GetObjMask(obj)
-		name := obj.GetName()
-		if mask&model.Virtual == 0 {
-			if obj.IsDir() {
-				name, err = d.cipher.DecryptDirName(model.UnwrapObjName(obj).GetName())
+		if obj.IsDir() {
+			name, err := d.getDecryptedName(obj.GetName(), true)
+			if err != nil {
+				//filter illegal files
+				continue
+			}
+			if !d.ShowHidden && strings.HasPrefix(name, ".") {
+				continue
+			}
+
+			objRes := model.Object{
+				Name:     name,
+				Size:     size,
+				Modified: obj.ModTime(),
+				IsFolder: obj.IsDir(),
+				Ctime:    obj.CreateTime(),
+				// discarding hash as it's encrypted
+			}
+			result = append(result, &objRes)
+		} else {
+			thumb, ok := model.GetThumb(obj)
+			// 如果进行加密文件 读取的大小应该进行解密
+			if d.fileEncryptor != nil && d.fileEncryptor.Enabled() {
+				remoteMountPath := stdpath.Join(d.getPathForRemote(path, true), obj.GetName())
+				size, err = d.getDecryptedFileSize(ctx, remoteMountPath, obj.GetSize())
 				if err != nil {
-					// filter illegal files
-					continue
-				}
-			} else {
-				size, err = d.cipher.DecryptedSize(size)
-				if err != nil {
-					// filter illegal files
-					continue
-				}
-				name, err = d.cipher.DecryptFileName(model.UnwrapObjName(obj).GetName())
-				if err != nil {
-					// filter illegal files
-					continue
+					log.Warnf("DecryptSize failed for %s ,will use original size, err:%s", path, err)
+					size = obj.GetSize()
 				}
 			}
+			name, err := d.getDecryptedName(obj.GetName(), false)
+			if err != nil {
+				//filter illegal files
+				continue
+			}
+			if !d.ShowHidden && strings.HasPrefix(name, ".") {
+				continue
+			}
+			objRes := model.Object{
+				Name:     name,
+				Size:     size,
+				Modified: obj.ModTime(),
+				IsFolder: obj.IsDir(),
+				Ctime:    obj.CreateTime(),
+				// discarding hash as it's encrypted
+			}
+			if d.Thumbnail && d.fileEncryptor != nil && d.fileEncryptor.Enabled() {
+				thumbPath := stdpath.Join(args.ReqPath, ".thumbnails", name+".webp")
+				thumb = fmt.Sprintf("%s/d%s?sign=%s",
+					common.GetApiUrl(ctx),
+					utils.EncodePath(thumbPath, true),
+					sign.Sign(thumbPath))
+			}
+			if !ok && !d.Thumbnail {
+				result = append(result, &objRes)
+			} else {
+				objWithThumb := model.ObjThumb{
+					Object: objRes,
+					Thumbnail: model.Thumbnail{
+						Thumbnail: thumb,
+					},
+				}
+				result = append(result, &objWithThumb)
+			}
 		}
-		if !d.ShowHidden && strings.HasPrefix(name, ".") {
-			continue
-		}
-		objRes := &model.Object{
-			Path:     stdpath.Join(remoteFullPath, obj.GetName()),
-			Name:     name,
-			Size:     size,
-			Modified: obj.ModTime(),
-			IsFolder: obj.IsDir(),
-			Ctime:    obj.CreateTime(),
-			Mask:     mask &^ model.Temp,
-			// discarding hash as it's encrypted
-		}
-		if !d.Thumbnail || !strings.HasPrefix(args.ReqPath, "/") {
-			result = append(result, objRes)
-			continue
-		}
-		thumbPath := stdpath.Join(args.ReqPath, ".thumbnails", name+".webp")
-		thumb := fmt.Sprintf("%s/d%s?sign=%s",
-			common.GetApiUrl(ctx),
-			utils.EncodePath(thumbPath, true),
-			sign.Sign(thumbPath))
-		result = append(result, &model.ObjThumb{
-			Object: *objRes,
-			Thumbnail: model.Thumbnail{
-				Thumbnail: thumb,
-			},
-		})
 	}
 
 	return result, nil
 }
 
-func (a Addition) GetRootPath() string {
-	return a.RemotePath
-}
-
 func (d *Crypt) Get(ctx context.Context, path string) (model.Obj, error) {
+	if utils.PathEqual(path, "/") {
+		return &model.Object{
+			Name:     "Root",
+			IsFolder: true,
+			Path:     "/",
+		}, nil
+	}
+	remoteFullPath := ""
+	var remoteObj model.Obj
+	var err, err2 error
 	firstTryIsFolder, secondTry := guessPath(path)
-	remoteFullPath := stdpath.Join(d.RemotePath, d.encryptPath(path, firstTryIsFolder))
-	remoteObj, err := fs.Get(ctx, remoteFullPath, &fs.GetArgs{NoLog: true})
+	remoteFullPath = d.getPathForRemote(path, firstTryIsFolder)
+	remoteObj, err = fs.Get(ctx, remoteFullPath, &fs.GetArgs{NoLog: true})
 	if err != nil {
-		if errors.Is(err, errs.StorageNotFound) {
-			remoteFullPath = stdpath.Join(d.RemotePath, path)
-			remoteObj, err = fs.Get(ctx, remoteFullPath, &fs.GetArgs{NoLog: true})
-			if err != nil {
-				// 可能是 虚拟路径+开启文件夹加密：返回NotSupport让op.Get去尝试op.List查找
-				return nil, errs.NotSupport
-			}
-		} else if secondTry && errs.IsObjectNotFound(err) {
-			// try the opposite
-			remoteFullPath = stdpath.Join(d.RemotePath, d.encryptPath(path, !firstTryIsFolder))
-			remoteObj, err = fs.Get(ctx, remoteFullPath, &fs.GetArgs{NoLog: true})
-			if err != nil {
-				return nil, err
+		if errs.IsObjectNotFound(err) && secondTry {
+			//try the opposite
+			remoteFullPath = d.getPathForRemote(path, !firstTryIsFolder)
+			remoteObj, err2 = fs.Get(ctx, remoteFullPath, &fs.GetArgs{NoLog: true})
+			if err2 != nil {
+				return nil, err2
 			}
 		} else {
 			return nil, err
 		}
 	}
-
-	size := remoteObj.GetSize()
-	name := remoteObj.GetName()
-	mask := model.GetObjMask(remoteObj) &^ model.Temp
-	if mask&model.Virtual == 0 {
-		if !remoteObj.IsDir() {
-			decryptedSize, err := d.cipher.DecryptedSize(size)
+	var size int64 = 0
+	name := ""
+	if !remoteObj.IsDir() {
+		// 如果不进行加密文件 读取的大小应该不进行解密
+		if d.fileEncryptor != nil && d.fileEncryptor.Enabled() {
+			size, err = d.getDecryptedFileSize(ctx, remoteFullPath, remoteObj.GetSize())
 			if err != nil {
-				log.Warnf("DecryptedSize failed for %s ,will use original size, err:%s", path, err)
-			} else {
-				size = decryptedSize
-			}
-			decryptedName, err := d.cipher.DecryptFileName(model.UnwrapObjName(remoteObj).GetName())
-			if err != nil {
-				log.Warnf("DecryptFileName failed for %s ,will use original name, err:%s", path, err)
-			} else {
-				name = decryptedName
+				log.Warnf("DecryptSize failed for %s ,will use original size, err:%s", path, err)
+				size = remoteObj.GetSize()
 			}
 		} else {
-			decryptedName, err := d.cipher.DecryptDirName(model.UnwrapObjName(remoteObj).GetName())
-			if err != nil {
-				log.Warnf("DecryptDirName failed for %s ,will use original name, err:%s", path, err)
-			} else {
-				name = decryptedName
-			}
+			size = remoteObj.GetSize()
+		}
+
+		name, err = d.getDecryptedName(remoteObj.GetName(), false)
+
+		if err != nil {
+			log.Warnf("DecryptFileName failed for %s ,will use original name, err:%s", path, err)
+			name = remoteObj.GetName()
+		}
+	} else {
+		name, err = d.getDecryptedName(remoteObj.GetName(), true)
+		if err != nil {
+			log.Warnf("DecryptDirName failed for %s ,will use original name, err:%s", path, err)
+			name = remoteObj.GetName()
 		}
 	}
-	return &model.Object{
-		Path:     remoteFullPath,
+	obj := &model.Object{
+		Path:     path,
 		Name:     name,
 		Size:     size,
 		Modified: remoteObj.ModTime(),
 		IsFolder: remoteObj.IsDir(),
-		Ctime:    remoteObj.CreateTime(),
-		Mask:     mask,
-	}, nil
+	}
+	return obj, nil
+	//return nil, errs.ObjectNotFound
 }
 
 // https://github.com/rclone/rclone/blob/v1.67.0/backend/crypt/cipher.go#L37
 const fileHeaderSize = 32
 
-func (d *Crypt) Link(ctx context.Context, file model.Obj, _ model.LinkArgs) (*model.Link, error) {
-	remoteStorage, remoteActualPath, err := op.GetStorageAndActualPath(file.GetPath())
+func (d *Crypt) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+
+	dstDirActualPath, err := d.getActualPathForRemote(file.GetPath(), false)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert path to remote path: %w", err)
+	}
+	remoteLink, remoteFile, err := op.Link(ctx, d.remoteStorage, dstDirActualPath, args)
 	if err != nil {
 		return nil, err
 	}
-	remoteLink, remoteFile, err := op.Link(ctx, remoteStorage, remoteActualPath, model.LinkArgs{})
-	if err != nil {
-		return nil, err
-	}
-
-	remoteSize := remoteLink.ContentLength
-	if remoteSize <= 0 {
-		remoteSize = remoteFile.GetSize()
-	}
-	rrf, err := stream.GetRangeReaderFromLink(remoteSize, remoteLink)
-	if err != nil {
-		_ = remoteLink.Close()
-		return nil, fmt.Errorf("the remote storage driver need to be enhanced to support encrytion")
-	}
-
-	mu := &sync.Mutex{}
-	var fileHeader []byte
-	rangeReaderFunc := func(ctx context.Context, offset, limit int64) (io.ReadCloser, error) {
-		length := limit
-		if offset == 0 && limit > 0 {
-			mu.Lock()
-			if limit <= fileHeaderSize {
-				defer mu.Unlock()
-				if fileHeader != nil {
-					return io.NopCloser(bytes.NewReader(fileHeader[:limit])), nil
-				}
-				length = fileHeaderSize
-			} else if fileHeader == nil {
-				defer mu.Unlock()
-			} else {
-				mu.Unlock()
-			}
-		}
-
-		remoteReader, err := rrf.RangeRead(ctx, http_range.Range{Start: offset, Length: length})
-		if err != nil {
-			return nil, err
-		}
-
-		if offset == 0 && limit > 0 {
-			fileHeader = make([]byte, fileHeaderSize)
-			n, err := io.ReadFull(remoteReader, fileHeader)
-			if n != fileHeaderSize {
-				fileHeader = nil
-				return nil, fmt.Errorf("failed to read all data: (expect =%d, actual =%d) %w", fileHeaderSize, n, err)
-			}
-			if limit <= fileHeaderSize {
-				remoteReader.Close()
-				return io.NopCloser(bytes.NewReader(fileHeader[:limit])), nil
-			} else {
-				remoteReader = utils.ReadCloser{
-					Reader: io.MultiReader(bytes.NewReader(fileHeader), remoteReader),
-					Closer: remoteReader,
-				}
-			}
-		}
-		return remoteReader, nil
-	}
-	return &model.Link{
-		RangeReader: stream.RangeReaderFunc(func(ctx context.Context, httpRange http_range.Range) (io.ReadCloser, error) {
-			readSeeker, err := d.cipher.DecryptDataSeek(ctx, rangeReaderFunc, httpRange.Start, httpRange.Length)
-			if err != nil {
-				return nil, err
-			}
-			return readSeeker, nil
-		}),
-		SyncClosers:      utils.NewSyncClosers(remoteLink),
-		RequireReference: remoteLink.RequireReference,
-	}, nil
+	return d.fileEncryptor.WrapLink(ctx, remoteLink, remoteFile)
 }
 
 func (d *Crypt) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error {
-	remoteStorage, remoteActualPath, err := op.GetStorageAndActualPath(parentDir.GetPath())
+	dstDirActualPath, err := d.getActualPathForRemote(parentDir.GetPath(), true)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to convert path to remote path: %w", err)
 	}
-	encryptedName := d.cipher.EncryptDirName(dirName)
-	return op.MakeDir(ctx, remoteStorage, stdpath.Join(remoteActualPath, encryptedName))
+	dir, err := d.getEncryptedName(dirName, true)
+	return op.MakeDir(ctx, d.remoteStorage, stdpath.Join(dstDirActualPath, dir))
 }
 
 func (d *Crypt) Move(ctx context.Context, srcObj, dstDir model.Obj) error {
-	_, err := fs.Move(ctx, srcObj.GetPath(), dstDir.GetPath())
-	return err
+	srcRemoteActualPath, err := d.getActualPathForRemote(srcObj.GetPath(), srcObj.IsDir())
+	if err != nil {
+		return fmt.Errorf("failed to convert path to remote path: %w", err)
+	}
+	dstRemoteActualPath, err := d.getActualPathForRemote(dstDir.GetPath(), dstDir.IsDir())
+	if err != nil {
+		return fmt.Errorf("failed to convert path to remote path: %w", err)
+	}
+	return op.Move(ctx, d.remoteStorage, srcRemoteActualPath, dstRemoteActualPath)
 }
 
 func (d *Crypt) Rename(ctx context.Context, srcObj model.Obj, newName string) error {
-	remoteStorage, remoteActualPath, err := op.GetStorageAndActualPath(srcObj.GetPath())
+	remoteActualPath, err := d.getActualPathForRemote(srcObj.GetPath(), srcObj.IsDir())
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to convert path to remote path: %w", err)
 	}
-	var newEncryptedName string
-	if srcObj.IsDir() {
-		newEncryptedName = d.cipher.EncryptDirName(newName)
-	} else {
-		newEncryptedName = d.cipher.EncryptFileName(newName)
+	newEncryptedName, err := d.getEncryptedName(newName, srcObj.IsDir())
+	if err != nil {
+		return fmt.Errorf("failed to get encrypted name: %w", err)
 	}
-	return op.Rename(ctx, remoteStorage, remoteActualPath, newEncryptedName)
+	return op.Rename(ctx, d.remoteStorage, remoteActualPath, newEncryptedName)
 }
 
 func (d *Crypt) Copy(ctx context.Context, srcObj, dstDir model.Obj) error {
-	_, err := fs.Copy(ctx, srcObj.GetPath(), dstDir.GetPath())
-	return err
+	srcRemoteActualPath, err := d.getActualPathForRemote(srcObj.GetPath(), srcObj.IsDir())
+	if err != nil {
+		return fmt.Errorf("failed to convert path to remote path: %w", err)
+	}
+	dstRemoteActualPath, err := d.getActualPathForRemote(dstDir.GetPath(), dstDir.IsDir())
+	if err != nil {
+		return fmt.Errorf("failed to convert path to remote path: %w", err)
+	}
+	return op.Copy(ctx, d.remoteStorage, srcRemoteActualPath, dstRemoteActualPath)
+
 }
 
 func (d *Crypt) Remove(ctx context.Context, obj model.Obj) error {
-	remoteStorage, remoteActualPath, err := op.GetStorageAndActualPath(obj.GetPath())
+	remoteActualPath, err := d.getActualPathForRemote(obj.GetPath(), obj.IsDir())
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to convert path to remote path: %w", err)
 	}
-	return op.Remove(ctx, remoteStorage, remoteActualPath)
+	return op.Remove(ctx, d.remoteStorage, remoteActualPath)
 }
 
 func (d *Crypt) Put(ctx context.Context, dstDir model.Obj, streamer model.FileStreamer, up driver.UpdateProgress) error {
-	remoteStorage, remoteActualPath, err := op.GetStorageAndActualPath(dstDir.GetPath())
+	
+	dstDirActualPath, err := d.getActualPathForRemote(dstDir.GetPath(), true)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to convert path to remote path: %w", err)
+	}
+	name, err := d.getEncryptedName(streamer.GetName(), false)
+	if err != nil {
+		return fmt.Errorf("failed to get encrypted name: %w", err)
 	}
 
-	// Encrypt the data into wrappedIn
-	wrappedIn, err := d.cipher.EncryptData(streamer)
+	reader, size, err := d.fileEncryptor.EncryptStream(streamer)
 	if err != nil {
-		return fmt.Errorf("failed to EncryptData: %w", err)
+		return fmt.Errorf("failed to encrypt stream: %w", err)
 	}
 
 	// doesn't support seekableStream, since rapid-upload is not working for encrypted data
@@ -368,31 +411,27 @@ func (d *Crypt) Put(ctx context.Context, dstDir model.Obj, streamer model.FileSt
 		Obj: &model.Object{
 			ID:       streamer.GetID(),
 			Path:     streamer.GetPath(),
-			Name:     d.cipher.EncryptFileName(streamer.GetName()),
-			Size:     d.cipher.EncryptedSize(streamer.GetSize()),
+			Name:     name,
+			Size:     size,
 			Modified: streamer.ModTime(),
 			IsFolder: streamer.IsDir(),
 		},
-		Reader:            wrappedIn,
+		Reader:            reader,
 		Mimetype:          "application/octet-stream",
+		WebPutAsTask:      streamer.NeedStore(),
 		ForceStreamUpload: true,
 		Exist:             streamer.GetExist(),
 	}
-	return op.Put(ctx, remoteStorage, remoteActualPath, streamOut, up)
+
+	return op.Put(ctx, d.remoteStorage, dstDirActualPath, streamOut, up)
 }
 
 func (d *Crypt) GetDetails(ctx context.Context) (*model.StorageDetails, error) {
-	remoteStorage, _, err := op.GetStorageAndActualPath(d.RemotePath)
-	if err != nil {
+	if d.remoteStorage == nil {
 		return nil, errs.NotImplement
 	}
-	remoteDetails, err := op.GetStorageDetails(ctx, remoteStorage)
-	if err != nil {
-		return nil, err
-	}
-	return &model.StorageDetails{
-		DiskUsage: remoteDetails.DiskUsage,
-	}, nil
+	return op.GetStorageDetails(ctx, d.remoteStorage)
 }
 
 var _ driver.Driver = (*Crypt)(nil)
+
