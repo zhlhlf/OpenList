@@ -241,33 +241,40 @@ func (y *Cloud189PC) Move(ctx context.Context, srcObj, dstDir model.Obj) (model.
 
 func (y *Cloud189PC) Rename(ctx context.Context, srcObj model.Obj, newName string) (model.Obj, error) {
 	isFamily := y.isFamily()
-	queryParam := make(map[string]string)
 	fullUrl := API_URL
-	method := http.MethodPost
 	if isFamily {
 		fullUrl += "/family/file"
-		method = http.MethodGet
-		queryParam["familyId"] = y.FamilyID
 	}
 
+	var formData map[string]string
 	var newObj model.Obj
 	switch f := srcObj.(type) {
 	case *Cloud189File:
 		fullUrl += "/renameFile.action"
-		queryParam["fileId"] = srcObj.GetID()
-		queryParam["destFileName"] = newName
+		formData = map[string]string{
+			"fileId":       srcObj.GetID(),
+			"destFileName": newName,
+		}
+		if isFamily {
+			formData["familyId"] = y.FamilyID
+		}
 		newObj = &Cloud189File{Icon: f.Icon} // 复用预览
 	case *Cloud189Folder:
 		fullUrl += "/renameFolder.action"
-		queryParam["folderId"] = srcObj.GetID()
-		queryParam["destFolderName"] = newName
+		formData = map[string]string{
+			"folderId":       srcObj.GetID(),
+			"destFolderName": newName,
+		}
+		if isFamily {
+			formData["familyId"] = y.FamilyID
+		}
 		newObj = &Cloud189Folder{}
 	default:
 		return nil, errs.NotSupport
 	}
 
-	_, err := y.request(fullUrl, method, func(req *resty.Request) {
-		req.SetContext(ctx).SetQueryParams(queryParam)
+	_, err := y.request(fullUrl, http.MethodPost, func(req *resty.Request) {
+		req.SetContext(ctx).SetFormData(formData)
 	}, nil, newObj, isFamily)
 	if err != nil {
 		return nil, err
