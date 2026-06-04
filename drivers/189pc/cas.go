@@ -134,7 +134,7 @@ func (y *Cloud189PC) uploadCASPlaceholder(ctx context.Context, dstDir model.Obj,
 		Reader:   bytes.NewReader(content),
 		Mimetype: "application/octet-stream",
 	}
-	return y.FastUpload(ctx, dstDir, fs, func(float64) {}, y.isFamily(), true)
+	return y.putFile(ctx, dstDir, fs, func(float64) {}, false)
 }
 
 func (y *Cloud189PC) linkCAS(ctx context.Context, obj *casObject, args model.LinkArgs) (*model.Link, error) {

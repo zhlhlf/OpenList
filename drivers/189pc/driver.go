@@ -322,14 +322,18 @@ func (y *Cloud189PC) Remove(ctx context.Context, obj model.Obj) error {
 	return y.WaitBatchTask("DELETE", resp.TaskID, time.Millisecond*200)
 }
 
-func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) (newObj model.Obj, err error) {
+func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) (model.Obj, error) {
+	return y.putFile(ctx, dstDir, stream, up, y.EnableCAS)
+}
+
+func (y *Cloud189PC) putFile(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress, casMode bool) (newObj model.Obj, err error) {
 	overwrite := !y.storageConfig.NoOverwriteUpload
 	isFamily := y.isFamily()
 	uploadMethod := y.UploadMethod
 	sourceName := stream.GetName()
 	sourceDstDir := dstDir
-	casMode := y.EnableCAS
 	var uploadInfo *UploadHashInfo
+	var casSourceObj model.Obj
 	// 开启家庭云转存
 	if !isFamily && y.FamilyTransfer {
 		// 修改上传目标为家庭云文件夹
@@ -355,7 +359,11 @@ func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.Fil
 		defer func() {
 			if newObj != nil {
 				if casMode {
-					go y.Delete(context.TODO(), y.FamilyID, newObj)
+					obj := casSourceObj
+					if obj == nil {
+						obj = newObj
+					}
+					go y.Delete(context.TODO(), y.FamilyID, obj)
 					go y.cleanFamilyTransferFile()
 					return
 				}
@@ -412,6 +420,9 @@ func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.Fil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if casMode && !y.isFamily() && y.FamilyTransfer {
+		casSourceObj = newObj
 	}
 	if !casMode {
 		return newObj, nil
