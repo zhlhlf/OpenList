@@ -3,7 +3,9 @@ package crypt
 import (
 	"context"
 	"encoding/base64"
+	stdpath "path"
 	"strings"
+	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/internal/errs"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
@@ -95,12 +97,56 @@ func (d *Crypt) tryDirectTransfer(ctx context.Context, streamer model.FileStream
 			reason)
 		return errs.NotSupport
 	}
+	dstName, err := d.getEncryptedName(streamer.GetName(), false)
+	if err != nil {
+		return err
+	}
 	log.Debugf("crypt direct copy: [%s]%s -> [%s]%s",
 		srcCrypt.remoteStorage.GetStorage().MountPath,
 		info.RemoteActualPath,
 		d.remoteStorage.GetStorage().MountPath,
 		dstDirActualPath)
-	return op.Copy(ctx, d.remoteStorage, info.RemoteActualPath, dstDirActualPath)
+	if err = op.Copy(ctx, d.remoteStorage, info.RemoteActualPath, dstDirActualPath); err != nil {
+		return err
+	}
+	srcName := stdpath.Base(info.RemoteActualPath)
+	if srcName != dstName {
+		return d.renameDirectCopiedFile(ctx, dstDirActualPath, srcName, dstName)
+	}
+	return nil
+}
+
+func (d *Crypt) renameDirectCopiedFile(ctx context.Context, dstDirActualPath, srcName, dstName string) error {
+	srcPath := stdpath.Join(dstDirActualPath, srcName)
+	err := op.Rename(ctx, d.remoteStorage, srcPath, dstName)
+	if err == nil {
+		log.Debugf("crypt direct copy rename: %s -> %s", srcName, dstName)
+		return nil
+	}
+	if ctx.Err() != nil || !errs.IsObjectNotFound(err) {
+		return err
+	}
+	time.Sleep(120 * time.Millisecond)
+	op.Cache.DeleteDirectory(d.remoteStorage, dstDirActualPath)
+	_, _ = op.List(ctx, d.remoteStorage, dstDirActualPath, model.ListArgs{Refresh: true})
+	err = op.Rename(ctx, d.remoteStorage, srcPath, dstName)
+	if err == nil {
+		log.Debugf("crypt direct copy rename: %s -> %s", srcName, dstName)
+		return nil
+	}
+	d.removeDirectCopiedFile(ctx, dstDirActualPath, srcName)
+	log.Debugf("crypt direct copy rename failed: %s -> %s: %v", srcName, dstName, err)
+	return err
+}
+
+func (d *Crypt) removeDirectCopiedFile(ctx context.Context, dstDirActualPath, srcName string) {
+	srcPath := stdpath.Join(dstDirActualPath, srcName)
+	err := op.Remove(ctx, d.remoteStorage, srcPath)
+	if err == nil {
+		log.Debugf("crypt direct copy cleanup: removed %s", srcPath)
+		return
+	}
+	log.Debugf("crypt direct copy cleanup failed: %s: %v", srcPath, err)
 }
 
 func (d *Crypt) directTransferIncompatibleReason(dst *Crypt) string {
