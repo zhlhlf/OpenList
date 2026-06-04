@@ -119,6 +119,10 @@ func (y *Cloud189PC) uploadCASPlaceholder(ctx context.Context, dstDir model.Obj,
 	if err != nil {
 		return nil, err
 	}
+	payload, err := decodeCASName(casName)
+	if err != nil {
+		return nil, err
+	}
 	content := []byte(casContent)
 	now := time.Now()
 	obj := &model.Object{
@@ -134,7 +138,11 @@ func (y *Cloud189PC) uploadCASPlaceholder(ctx context.Context, dstDir model.Obj,
 		Reader:   bytes.NewReader(content),
 		Mimetype: "application/octet-stream",
 	}
-	return y.putFile(ctx, dstDir, fs, func(float64) {}, false)
+	casObj, err := y.putFile(ctx, dstDir, fs, func(float64) {}, false)
+	if err != nil {
+		return nil, err
+	}
+	return &casObject{Obj: casObj, payload: payload}, nil
 }
 
 func (y *Cloud189PC) linkCAS(ctx context.Context, obj *casObject, args model.LinkArgs) (*model.Link, error) {
