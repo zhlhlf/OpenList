@@ -8,7 +8,7 @@ on:
       useCustomFrontend:
         description: 'Use custom frontend repository (zhlhlf/OpenList-Frontend)'
         required: false
-        default: 'false'
+        default: 'true'
         type: boolean
 
 permissions:
