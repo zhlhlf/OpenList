@@ -101,19 +101,27 @@ func (d *Crypt) tryDirectTransfer(ctx context.Context, streamer model.FileStream
 	if err != nil {
 		return err
 	}
+	srcName := stdpath.Base(info.RemoteActualPath)
 	log.Debugf("crypt direct copy: [%s]%s -> [%s]%s",
 		srcCrypt.remoteStorage.GetStorage().MountPath,
 		info.RemoteActualPath,
 		d.remoteStorage.GetStorage().MountPath,
 		dstDirActualPath)
 	if err = op.Copy(ctx, d.remoteStorage, info.RemoteActualPath, dstDirActualPath); err != nil {
-		return err
+		if srcName == dstName || !isDirectCopyConflict(err) {
+			return err
+		}
+		log.Debugf("crypt direct copy conflict, try rename existing copied object: %s", srcName)
 	}
-	srcName := stdpath.Base(info.RemoteActualPath)
+	time.Sleep(80 * time.Millisecond)
 	if srcName != dstName {
 		return d.renameDirectCopiedFile(ctx, dstDirActualPath, srcName, dstName)
 	}
 	return nil
+}
+
+func isDirectCopyConflict(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "conflict with the target object")
 }
 
 func (d *Crypt) renameDirectCopiedFile(ctx context.Context, dstDirActualPath, srcName, dstName string) error {
