@@ -77,7 +77,7 @@ func (y *Cloud189PC) Init(ctx context.Context) (err error) {
 		}
 		if y.AccessToken != "" {
 			err = y.useAccessTokenAndInit(y.AccessToken)
-		}else {
+		} else {
 			identity := utils.GetMD5EncodeStr(y.Username + y.Password)
 			if !y.isLogin() || y.identity != identity {
 				y.identity = identity
@@ -96,7 +96,7 @@ func (y *Cloud189PC) Init(ctx context.Context) (err error) {
 	}
 
 	// 创建中转文件夹
-	if y.FamilyTransfer {
+	if y.FamilyTransfer || y.EnableCAS {
 		if err := y.createFamilyTransferFolder(); err != nil {
 			return err
 		}
@@ -126,10 +126,19 @@ func (y *Cloud189PC) Drop(ctx context.Context) error {
 }
 
 func (y *Cloud189PC) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
-	return y.getFiles(ctx, dir.GetID(), y.isFamily())
+	objs, err := y.getFiles(ctx, dir.GetID(), y.isFamily())
+	if err != nil {
+		return nil, err
+	}
+	return y.decorateCASObjects(objs), nil
 }
 
 func (y *Cloud189PC) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+	if y.EnableCAS {
+		if obj, ok := file.(*casObject); ok {
+			return y.linkCAS(ctx, obj, args)
+		}
+	}
 	var downloadUrl struct {
 		URL string `json:"fileDownloadUrl"`
 	}
@@ -317,6 +326,10 @@ func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.Fil
 	overwrite := !y.storageConfig.NoOverwriteUpload
 	isFamily := y.isFamily()
 	uploadMethod := y.UploadMethod
+	sourceName := stream.GetName()
+	sourceDstDir := dstDir
+	casMode := y.EnableCAS
+	var uploadInfo *UploadHashInfo
 	// 开启家庭云转存
 	if !isFamily && y.FamilyTransfer {
 		// 修改上传目标为家庭云文件夹
@@ -324,7 +337,7 @@ func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.Fil
 		dstDir = y.familyTransferFolder
 
 		// 使用临时文件名 不然一些特殊名字转存不了
-		srcName := stream.GetName()
+		srcName := sourceName
 		parts := strings.Split(srcName, ".")
 		lastPart := parts[len(parts)-1]
 		if len(parts) == 1 {
@@ -341,6 +354,11 @@ func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.Fil
 
 		defer func() {
 			if newObj != nil {
+				if casMode {
+					go y.Delete(context.TODO(), y.FamilyID, newObj)
+					go y.cleanFamilyTransferFile()
+					return
+				}
 				// 转存家庭云文件到个人云
 				err = y.SaveFamilyFileToPersonCloud(context.TODO(), y.FamilyID, newObj, transferDstDir, true)
 				// 删除家庭云源文件
@@ -357,22 +375,22 @@ func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.Fil
 				var file *Cloud189File
 
 				for attempt := 1; attempt <= maxRetries; attempt++ {
-				    if attempt > 1 {
-				        time.Sleep(200 * time.Millisecond) // 等待天翼云盘同步
-				    }
-				
-				    file, err = y.findFileByName(context.TODO(), newObj.GetName(), transferDstDir.GetID(), false)
-				    if err == nil {
-				        break // 找到文件，跳出循环
-				    }
-				
-				    // 最后一次尝试失败 删除退出吧
-				    if attempt == maxRetries {
-				        if err != errs.ObjectNotFound {
-				       		_ = y.Delete(context.TODO(), "", file) // 尝试删除不完整文件
-				        	return
-				    	}
-				    }
+					if attempt > 1 {
+						time.Sleep(200 * time.Millisecond) // 等待天翼云盘同步
+					}
+
+					file, err = y.findFileByName(context.TODO(), newObj.GetName(), transferDstDir.GetID(), false)
+					if err == nil {
+						break // 找到文件，跳出循环
+					}
+
+					// 最后一次尝试失败 删除退出吧
+					if attempt == maxRetries {
+						if err != errs.ObjectNotFound {
+							_ = y.Delete(context.TODO(), "", file) // 尝试删除不完整文件
+							return
+						}
+					}
 				}
 
 				// 重命名转存文件
@@ -387,11 +405,30 @@ func (y *Cloud189PC) Put(ctx context.Context, dstDir model.Obj, stream model.Fil
 	}
 
 	switch uploadMethod {
-		case "rapid":
-			return y.FastUpload(ctx, dstDir, stream, up, isFamily, overwrite)
-		default:
-			return y.FastUpload(ctx, dstDir, stream, up, isFamily, overwrite)
+	case "rapid":
+		newObj, uploadInfo, err = y.FastUploadWithInfo(ctx, dstDir, stream, up, isFamily, overwrite)
+	default:
+		newObj, uploadInfo, err = y.FastUploadWithInfo(ctx, dstDir, stream, up, isFamily, overwrite)
 	}
+	if err != nil {
+		return nil, err
+	}
+	if !casMode {
+		return newObj, nil
+	}
+	if uploadInfo != nil {
+		uploadInfo.Name = sourceName
+	}
+	casObj, err := y.uploadCASPlaceholder(ctx, sourceDstDir, uploadInfo)
+	if err != nil {
+		return nil, err
+	}
+	if newObj != nil && !(!y.isFamily() && y.FamilyTransfer) {
+		if err = y.Delete(context.TODO(), IF(y.isFamily(), y.FamilyID, ""), newObj); err != nil {
+			return nil, err
+		}
+	}
+	return casObj, nil
 }
 
 func (y *Cloud189PC) GetDetails(ctx context.Context) (*model.StorageDetails, error) {

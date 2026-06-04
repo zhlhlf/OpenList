@@ -468,7 +468,7 @@ func (y *Cloud189PC) refreshSession() (err error) {
 	return
 }
 
-func (y *Cloud189PC) updateValue(str *string, str2 string)  {
+func (y *Cloud189PC) updateValue(str *string, str2 string) {
 	*str = str2
 }
 
@@ -489,7 +489,25 @@ func (y *Cloud189PC) useAccessTokenAndInit(accessToken string) error {
 }
 
 // 快传
+type UploadHashInfo struct {
+	Name          string
+	Size          int64
+	SliceSize     int64
+	Count         int
+	LastSliceSize int64
+	FileMD5       string
+	SliceMD5      string
+	PartInfos     []string
+	Cache         io.ReaderAt
+	Cleanup       func()
+}
+
 func (y *Cloud189PC) FastUpload(ctx context.Context, dstDir model.Obj, file model.FileStreamer, up driver.UpdateProgress, isFamily bool, overwrite bool) (model.Obj, error) {
+	obj, _, err := y.FastUploadWithInfo(ctx, dstDir, file, up, isFamily, overwrite)
+	return obj, err
+}
+
+func (y *Cloud189PC) FastUploadWithInfo(ctx context.Context, dstDir model.Obj, file model.FileStreamer, up driver.UpdateProgress, isFamily bool, overwrite bool) (model.Obj, *UploadHashInfo, error) {
 	var (
 		cache = file.GetFile()
 		tmpF  *os.File
@@ -499,7 +517,7 @@ func (y *Cloud189PC) FastUpload(ctx context.Context, dstDir model.Obj, file mode
 	if _, ok := cache.(io.ReaderAt); !ok && size > 0 {
 		tmpF, err = os.CreateTemp(conf.Conf.TempDir, "file-*")
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		defer func() {
 			_ = tmpF.Close()
@@ -528,7 +546,7 @@ func (y *Cloud189PC) FastUpload(ctx context.Context, dstDir model.Obj, file mode
 	written := int64(0)
 	for i := 1; i <= count; i++ {
 		if utils.IsCanceled(ctx) {
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
 
 		if i == count {
@@ -538,7 +556,7 @@ func (y *Cloud189PC) FastUpload(ctx context.Context, dstDir model.Obj, file mode
 		n, err := utils.CopyWithBufferN(io.MultiWriter(writers...), file, byteSize)
 		written += n
 		if err != nil && err != io.EOF {
-			return nil, err
+			return nil, nil, err
 		}
 		md5Byte := sliceMd5.Sum(nil)
 		sliceMd5Hexs = append(sliceMd5Hexs, strings.ToUpper(hex.EncodeToString(md5Byte)))
@@ -548,11 +566,11 @@ func (y *Cloud189PC) FastUpload(ctx context.Context, dstDir model.Obj, file mode
 
 	if tmpF != nil {
 		if size > 0 && written != size {
-			return nil, errs.NewErr(err, "CreateTempFile failed, incoming stream actual size= %d, expect = %d ", written, size)
+			return nil, nil, errs.NewErr(err, "CreateTempFile failed, incoming stream actual size= %d, expect = %d ", written, size)
 		}
 		_, err = tmpF.Seek(0, io.SeekStart)
 		if err != nil {
-			return nil, errs.NewErr(err, "CreateTempFile failed, can't seek to 0 ")
+			return nil, nil, errs.NewErr(err, "CreateTempFile failed, can't seek to 0 ")
 		}
 	}
 
@@ -588,7 +606,7 @@ func (y *Cloud189PC) FastUpload(ctx context.Context, dstDir model.Obj, file mode
 			req.SetContext(ctx)
 		}, params, &uploadInfo, isFamily)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		uploadProgress = &UploadProgress{
 			UploadInfo:  uploadInfo,
@@ -638,7 +656,7 @@ func (y *Cloud189PC) FastUpload(ctx context.Context, dstDir model.Obj, file mode
 				uploadProgress.UploadParts = utils.SliceFilter(uploadProgress.UploadParts, func(s string) bool { return s != "" })
 				base.SaveUploadProgress(y, uploadProgress, y.getTokenInfo().SessionKey, fileMd5Hex)
 			}
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -653,9 +671,19 @@ func (y *Cloud189PC) FastUpload(ctx context.Context, dstDir model.Obj, file mode
 			"opertype":     IF(overwrite, "3", "1"),
 		}, &resp, isFamily)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return resp.toFile(), nil
+	return resp.toFile(), &UploadHashInfo{
+		Name:          file.GetName(),
+		Size:          size,
+		SliceSize:     sliceSize,
+		Count:         count,
+		LastSliceSize: lastSliceSize,
+		FileMD5:       fileMd5Hex,
+		SliceMD5:      sliceMd5Hex,
+		PartInfos:     partInfos,
+		Cache:         cache.(io.ReaderAt),
+	}, nil
 }
 
 // 获取上传切片信息
@@ -702,8 +730,6 @@ func (y *Cloud189PC) GetMultiUploadUrls(ctx context.Context, isFamily bool, uplo
 	})
 	return uploadUrlInfos, nil
 }
-
-
 
 func (y *Cloud189PC) isFamily() bool {
 	return y.Type == "family"
