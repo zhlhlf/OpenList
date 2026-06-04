@@ -118,21 +118,19 @@ func (d *Crypt) tryDirectTransfer(ctx context.Context, streamer model.FileStream
 
 func (d *Crypt) renameDirectCopiedFile(ctx context.Context, dstDirActualPath, srcName, dstName string) error {
 	srcPath := stdpath.Join(dstDirActualPath, srcName)
-	err := op.Rename(ctx, d.remoteStorage, srcPath, dstName)
-	if err == nil {
-		log.Debugf("crypt direct copy rename: %s -> %s", srcName, dstName)
-		return nil
-	}
-	if ctx.Err() != nil || !errs.IsObjectNotFound(err) {
-		return err
-	}
-	time.Sleep(120 * time.Millisecond)
-	op.Cache.DeleteDirectory(d.remoteStorage, dstDirActualPath)
-	_, _ = op.List(ctx, d.remoteStorage, dstDirActualPath, model.ListArgs{Refresh: true})
-	err = op.Rename(ctx, d.remoteStorage, srcPath, dstName)
-	if err == nil {
-		log.Debugf("crypt direct copy rename: %s -> %s", srcName, dstName)
-		return nil
+	var err error
+	for i := 0; i < 5; i++ {
+		err = op.Rename(ctx, d.remoteStorage, srcPath, dstName)
+		if err == nil {
+			log.Debugf("crypt direct copy rename: %s -> %s", srcName, dstName)
+			return nil
+		}
+		if ctx.Err() != nil || !errs.IsObjectNotFound(err) {
+			return err
+		}
+		time.Sleep(300 * time.Millisecond)
+		op.Cache.DeleteDirectory(d.remoteStorage, dstDirActualPath)
+		_, _ = op.List(ctx, d.remoteStorage, dstDirActualPath, model.ListArgs{Refresh: true})
 	}
 	d.removeDirectCopiedFile(ctx, dstDirActualPath, srcName)
 	log.Debugf("crypt direct copy rename failed: %s -> %s: %v", srcName, dstName, err)
@@ -141,10 +139,19 @@ func (d *Crypt) renameDirectCopiedFile(ctx context.Context, dstDirActualPath, sr
 
 func (d *Crypt) removeDirectCopiedFile(ctx context.Context, dstDirActualPath, srcName string) {
 	srcPath := stdpath.Join(dstDirActualPath, srcName)
-	err := op.Remove(ctx, d.remoteStorage, srcPath)
-	if err == nil {
-		log.Debugf("crypt direct copy cleanup: removed %s", srcPath)
-		return
+	var err error
+	for i := 0; i < 5; i++ {
+		err = op.Remove(ctx, d.remoteStorage, srcPath)
+		if err == nil {
+			log.Debugf("crypt direct copy cleanup: removed %s", srcPath)
+			return
+		}
+		if ctx.Err() != nil || !errs.IsObjectNotFound(err) {
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+		op.Cache.DeleteDirectory(d.remoteStorage, dstDirActualPath)
+		_, _ = op.List(ctx, d.remoteStorage, dstDirActualPath, model.ListArgs{Refresh: true})
 	}
 	log.Debugf("crypt direct copy cleanup failed: %s: %v", srcPath, err)
 }
