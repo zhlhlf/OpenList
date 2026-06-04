@@ -2,11 +2,13 @@ package crypt
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"io"
-	"strconv"
 	stdpath "path"
+	"strconv"
 	"strings"
+
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/errs"
 	"github.com/OpenListTeam/OpenList/v4/internal/fs"
@@ -196,7 +198,7 @@ func (d *Crypt) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([
 				continue
 			}
 
-			objRes := model.Object{
+			objRes := &model.Object{
 				Name:     name,
 				Size:     size,
 				Modified: obj.ModTime(),
@@ -204,7 +206,7 @@ func (d *Crypt) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([
 				Ctime:    obj.CreateTime(),
 				// discarding hash as it's encrypted
 			}
-			result = append(result, &objRes)
+			result = append(result, d.wrapDirectTransferObj(objRes, stdpath.Join(d.getPathForRemote(path, true), obj.GetName())))
 		} else {
 			thumb, ok := model.GetThumb(obj)
 			// 如果进行加密文件 读取的大小应该进行解密
@@ -224,7 +226,7 @@ func (d *Crypt) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([
 			if !d.ShowHidden && strings.HasPrefix(name, ".") {
 				continue
 			}
-			objRes := model.Object{
+			objRes := &model.Object{
 				Name:     name,
 				Size:     size,
 				Modified: obj.ModTime(),
@@ -240,15 +242,15 @@ func (d *Crypt) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([
 					sign.Sign(thumbPath))
 			}
 			if !ok && !d.Thumbnail {
-				result = append(result, &objRes)
+				result = append(result, d.wrapDirectTransferObj(objRes, stdpath.Join(d.getPathForRemote(path, true), obj.GetName())))
 			} else {
 				objWithThumb := model.ObjThumb{
-					Object: objRes,
+					Object: *objRes,
 					Thumbnail: model.Thumbnail{
 						Thumbnail: thumb,
 					},
 				}
-				result = append(result, &objWithThumb)
+				result = append(result, d.wrapDirectTransferObj(&objWithThumb, stdpath.Join(d.getPathForRemote(path, true), obj.GetName())))
 			}
 		}
 	}
@@ -316,7 +318,7 @@ func (d *Crypt) Get(ctx context.Context, path string) (model.Obj, error) {
 		Modified: remoteObj.ModTime(),
 		IsFolder: remoteObj.IsDir(),
 	}
-	return obj, nil
+	return d.wrapDirectTransferObj(obj, d.getPathForRemote(path, remoteObj.IsDir())), nil
 	//return nil, errs.ObjectNotFound
 }
 
@@ -391,11 +393,17 @@ func (d *Crypt) Remove(ctx context.Context, obj model.Obj) error {
 }
 
 func (d *Crypt) Put(ctx context.Context, dstDir model.Obj, streamer model.FileStreamer, up driver.UpdateProgress) error {
-	
+
 	dstDirActualPath, err := d.getActualPathForRemote(dstDir.GetPath(), true)
 	if err != nil {
 		return fmt.Errorf("failed to convert path to remote path: %w", err)
 	}
+	if err = d.tryDirectTransfer(ctx, streamer, dstDirActualPath); err == nil {
+		return nil
+	} else if !stderrors.Is(err, errs.NotSupport) {
+		return err
+	}
+
 	name, err := d.getEncryptedName(streamer.GetName(), false)
 	if err != nil {
 		return fmt.Errorf("failed to get encrypted name: %w", err)
@@ -434,4 +442,3 @@ func (d *Crypt) GetDetails(ctx context.Context) (*model.StorageDetails, error) {
 }
 
 var _ driver.Driver = (*Crypt)(nil)
-
