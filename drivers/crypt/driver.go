@@ -43,7 +43,7 @@ func (d *Crypt) Config() driver.Config {
 			LocalSort:   true,
 			OnlyProxy:   false,
 			NoCache:     true,
-			NoLinkURL:   d.fileEncryptor != nil && d.fileEncryptor.Enabled(),
+			NoLinkURL:   utils.GetNoneEmpty(d.EncryptFile, fileEncryptionFalse) != fileEncryptionFalse,
 			DefaultRoot: "/",
 		}
 	}
