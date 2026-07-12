@@ -1,28 +1,57 @@
 name: Release builds
 
 on:
-  release:
-    types: [ published ]
+  push:
+
+  workflow_dispatch:
+    inputs:
+      useCustomFrontend:
+        description: 'Use custom frontend repository (zhlhlf/OpenList-Frontend)'
+        required: false
+        default: 'true'
+        type: boolean
 
 permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Prepare Release Context
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.release_vars.outputs.tag_name }}
+      prerelease: ${{ steps.release_vars.outputs.prerelease }}
+    steps:
+    - name: Compute release variables
+      id: release_vars
+      shell: bash
+      run: |
+        if [ "${{ github.event_name }}" = "release" ]; then
+          echo "tag_name=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "tag_name=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=true" >> "$GITHUB_OUTPUT"
+        fi
+
   # Set release to prerelease first
   prerelease:
     name: Set Prerelease
+    needs: prepare
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
-      - name: Prerelease
-        uses: irongut/EditRelease@v1.2.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          id: ${{ github.event.release.id }}
-          prerelease: true
+    - name: Prerelease
+      uses: irongut/EditRelease@v1.2.0
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        id: ${{ github.event.release.id }}
+        prerelease: true
 
   # Main release job for all platforms
   release:
-    needs: prerelease
+    needs: [ prepare, prerelease ]
+    if: always() && needs.prepare.result == 'success' && (needs.prerelease.result == 'success' || needs.prerelease.result == 'skipped')
     strategy:
       matrix:
         build-type: [ 'standard', 'lite' ]
@@ -31,48 +60,48 @@ jobs:
     runs-on: ubuntu-latest
     steps:
 
-      - name: Free Disk Space (Ubuntu)
-        if: matrix.target-platform == ''
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
+    - name: Free Disk Space (Ubuntu)
+      if: matrix.target-platform == ''
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: true
+        docker-images: true
+        swap-storage: true
 
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.26.4'
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25.0'
 
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 1
-          fetch-tags: true
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-      - name: Install dependencies
-        if: matrix.target-platform == ''
-        run: |
-          sudo snap install zig --classic --beta
-          docker pull crazymax/xgo:latest
-          go install github.com/crazy-max/xgo@latest
-          sudo apt install upx
+    - name: Install dependencies
+      if: matrix.target-platform == ''
+      run: |
+        sudo snap install zig --classic --beta
+        docker pull crazymax/xgo:latest
+        go install github.com/crazy-max/xgo@latest
+        sudo apt install upx
 
-      - name: Build
-        run: |
-          bash build.sh release ${{ matrix.build-type == 'lite' && 'lite' || '' }} ${{ matrix.target-platform }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FRONTEND_REPO: ${{ vars.FRONTEND_REPO }}
+    - name: Build
+      run: |
+        if [ "${{ github.event.inputs.useCustomFrontend }}" = "true" ]; then
+          export FRONTEND_REPO=zhlhlf/OpenList-Frontend
+        fi
+        bash build.sh release ${{ matrix.build-type == 'lite' && 'lite' || '' }} ${{ matrix.target-platform }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload assets
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          for file in build/compress/*; do
-            gh release upload "${{ github.event.release.tag_name }}" "$file" --clobber
-          done
+    - name: Upload assets
+      uses: softprops/action-gh-release@v2
+      with:
+        files: build/compress/*
+        prerelease: ${{ needs.prepare.outputs.prerelease }}
+        tag_name: ${{ needs.prepare.outputs.tag_name }}
