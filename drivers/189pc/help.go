@@ -81,8 +81,31 @@ func timestamp() int64 {
 	return time.Now().UTC().UnixNano() / 1e6
 }
 
+func parseTyyTime(str string) (time.Time, error) {
+	bs := strings.Trim(str, "\"")
+	// 189 时间串里 AM/PM 前可能使用 U+202F 窄不换行空格或 U+00A0 不换行空格，统一替换为普通空格
+	bs = strings.ReplaceAll(bs, " ", " ")
+	bs = strings.ReplaceAll(bs, " ", " ")
+
+	var v time.Time
+	var err error
+	// 189 返回的时间可能自带时区（如 "Aug 11, 2026, 10:37:18 PM +08"），也可能不带，分别尝试
+	for _, s := range []string{bs, bs + " +08"} {
+		for _, f := range []string{"2006-01-02 15:04:05 -07", "Jan 2, 2006 3:04:05 PM -07", "Jan 2, 2006, 3:04:05 PM -07"} {
+			v, err = time.ParseInLocation(f, s, utils.CNLoc)
+			if err == nil {
+				break
+			}
+		}
+		if err == nil {
+			break
+		}
+	}
+	return v, err
+}
+
 func MustParseTime(str string) *time.Time {
-	lastOpTime, _ := time.ParseInLocation("2006-01-02 15:04:05 -07", str+" +08", time.Local)
+	lastOpTime, _ := parseTyyTime(str)
 	return &lastOpTime
 }
 
@@ -102,24 +125,7 @@ func (t *Time) UnmarshalXML(e *xml.Decoder, ee xml.StartElement) error {
 	return e.Skip()
 }
 func (t *Time) Unmarshal(b []byte) error {
-	bs := strings.Trim(string(b), "\"")
-	// 189 时间串里 AM/PM 前可能使用 U+202F 窄不换行空格或 U+00A0 不换行空格，统一替换为普通空格
-	bs = strings.ReplaceAll(bs, " ", " ")
-	bs = strings.ReplaceAll(bs, " ", " ")
-	var v time.Time
-	var err error
-	// 189 返回的时间可能自带时区（如 "Aug 11, 2026, 10:37:18 PM +08"），也可能不带，分别尝试
-	for _, s := range []string{bs, bs + " +08"} {
-		for _, f := range []string{"2006-01-02 15:04:05 -07", "Jan 2, 2006 3:04:05 PM -07", "Jan 2, 2006, 3:04:05 PM -07"} {
-			v, err = time.ParseInLocation(f, s, utils.CNLoc)
-			if err == nil {
-				break
-			}
-		}
-		if err == nil {
-			break
-		}
-	}
+	v, err := parseTyyTime(string(b))
 	*t = Time(v)
 	return err
 }
