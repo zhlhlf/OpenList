@@ -3,7 +3,10 @@ package _189pc
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -23,6 +26,13 @@ const (
 	casKey     = "zhlhlf"
 	casExt     = ".bin"
 	casContent = "zhlhlf"
+
+	// v2: nonce-based probabilistic obfuscation.
+	// layout: 4-byte random nonce || 2-byte checksum || payload
+	// (no version byte: checksum over key+nonce+body doubles as format tag)
+	casNonceSize  = 4
+	casCheckSize  = 2
+	casHeaderSize = casNonceSize + casCheckSize
 )
 
 type casPayload struct {
@@ -62,7 +72,18 @@ func encodeCASName(info *UploadHashInfo) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	encoded := base64.RawURLEncoding.EncodeToString(xorCAS(payload))
+	// v2: each encoding gets a fresh random nonce, so the same
+	// info never produces the same .bin name twice.
+	nonce := make([]byte, casNonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("cas nonce: %w", err)
+	}
+	body := xorCASv2(payload, nonce)
+	data := make([]byte, 0, casHeaderSize+len(body))
+	data = append(data, nonce...)
+	data = append(data, casChecksum(nonce, body)...)
+	data = append(data, body...)
+	encoded := base64.RawURLEncoding.EncodeToString(data)
 	return encoded + casExt, nil
 }
 
@@ -75,26 +96,60 @@ func decodeCASName(name string) (*casPayload, error) {
 	if err != nil {
 		return nil, err
 	}
-	var payload casPayload
-	if err = utils.Json.Unmarshal(xorCAS(data), &payload); err != nil {
+	if len(data) < casHeaderSize {
+		return nil, fmt.Errorf("not a cas bin")
+	}
+	nonce := data[:casNonceSize]
+	checksum := data[casNonceSize:casHeaderSize]
+	body := data[casHeaderSize:]
+	if !bytes.Equal(checksum, casChecksum(nonce, body)) {
+		return nil, fmt.Errorf("cas checksum mismatch")
+	}
+	payload := xorCASv2(body, nonce)
+	var p casPayload
+	if err = utils.Json.Unmarshal(payload, &p); err != nil {
 		return nil, err
 	}
-	if payload.Name == "" || payload.Size < 0 || payload.MD5 == "" {
+	if p.Name == "" || p.Size < 0 || p.MD5 == "" {
 		return nil, fmt.Errorf("invalid cas payload")
 	}
-	if payload.SliceMD5 == "" {
-		payload.SliceMD5 = payload.MD5
+	if p.SliceMD5 == "" {
+		p.SliceMD5 = p.MD5
 	}
-	return &payload, nil
+	return &p, nil
 }
 
-func xorCAS(data []byte) []byte {
+// xorCASv2 derives a keystream from the secret and the per-file nonce
+// via SHA-256 in counter mode, then XORs the payload with it.
+func xorCASv2(data, nonce []byte) []byte {
 	out := make([]byte, len(data))
-	key := []byte(casKey)
-	for i, b := range data {
-		out[i] = b ^ key[i%len(key)]
+	keystream := make([]byte, 0, 32)
+	counter := uint32(0)
+	for off := 0; off < len(data); off += 32 {
+		h := sha256.New()
+		h.Write([]byte(casKey))
+		h.Write(nonce)
+		var ctr [4]byte
+		binary.BigEndian.PutUint32(ctr[:], counter)
+		h.Write(ctr[:])
+		keystream = h.Sum(keystream[:0])
+		copy(out[off:], keystream)
+		counter++
+	}
+	for i := range out {
+		out[i] ^= data[i]
 	}
 	return out
+}
+
+// casChecksum is a truncated SHA-256 digest over key+nonce+body, used
+// both to validate the blob and to distinguish cas names from random ones.
+func casChecksum(nonce, body []byte) []byte {
+	h := sha256.New()
+	h.Write([]byte(casKey))
+	h.Write(nonce)
+	h.Write(body)
+	return h.Sum(nil)[:casCheckSize]
 }
 
 func (y *Cloud189PC) decorateCASObjects(objs []model.Obj) []model.Obj {
