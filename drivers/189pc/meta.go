@@ -19,6 +19,7 @@ type Addition struct {
 	UploadThread   string `json:"upload_thread" default:"3" help:"1<=thread<=32"`
 	FamilyTransfer bool   `json:"family_transfer"`
 	EnableCAS      bool   `json:"enable_cas" help:"Upload real file data and keep a small .bin CAS placeholder"`
+	CASEncoding    string `json:"cas_encoding" type:"select" options:"base64,base32768" default:"base64" help:"CAS placeholder filename encoding"`
 	NoUseOcr       bool   `json:"no_use_ocr"`
 }
 

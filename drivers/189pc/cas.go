@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Max-Sum/base32768"
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/internal/stream"
@@ -59,7 +60,7 @@ func (o *casObject) GetHash() utils.HashInfo {
 	return utils.NewHashInfo(utils.MD5, o.payload.MD5)
 }
 
-func encodeCASName(info *UploadHashInfo) (string, error) {
+func encodeCASName(info *UploadHashInfo, encoding string) (string, error) {
 	if info == nil {
 		return "", fmt.Errorf("missing cas upload info")
 	}
@@ -84,6 +85,9 @@ func encodeCASName(info *UploadHashInfo) (string, error) {
 	data = append(data, casChecksum(nonce, body)...)
 	data = append(data, body...)
 	encoded := base64.RawURLEncoding.EncodeToString(data)
+	if encoding == "base32768" {
+		encoded = base32768.SafeEncoding.EncodeToString(data)
+	}
 	return encoded + casExt, nil
 }
 
@@ -92,7 +96,13 @@ func decodeCASName(name string) (*casPayload, error) {
 		return nil, fmt.Errorf("not a cas bin")
 	}
 	rawName := strings.TrimSuffix(name, path.Ext(name))
-	data, err := base64.RawURLEncoding.DecodeString(rawName)
+	var data []byte
+	var err error
+	if strings.ContainsFunc(rawName, func(r rune) bool { return r > 127 }) {
+		data, err = base32768.SafeEncoding.DecodeString(rawName)
+	} else {
+		data, err = base64.RawURLEncoding.DecodeString(rawName)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +180,7 @@ func (y *Cloud189PC) decorateCASObjects(objs []model.Obj) []model.Obj {
 }
 
 func (y *Cloud189PC) uploadCASPlaceholder(ctx context.Context, dstDir model.Obj, info *UploadHashInfo) (model.Obj, error) {
-	casName, err := encodeCASName(info)
+	casName, err := encodeCASName(info, y.CASEncoding)
 	if err != nil {
 		return nil, err
 	}
