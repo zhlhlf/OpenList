@@ -77,6 +77,9 @@ func (y *Cloud189PC) Init(ctx context.Context) (err error) {
 		}
 		if y.AccessToken != "" {
 			err = y.useAccessTokenAndInit(y.AccessToken)
+			if err != nil && y.Username != "" && y.Password != "" {
+				err = y.login()
+			}
 		} else {
 			identity := utils.GetMD5EncodeStr(y.Username + y.Password)
 			if !y.isLogin() || y.identity != identity {
@@ -85,6 +88,9 @@ func (y *Cloud189PC) Init(ctx context.Context) (err error) {
 					return
 				}
 			}
+		}
+		if err != nil {
+			return err
 		}
 	}
 

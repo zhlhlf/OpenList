@@ -454,13 +454,15 @@ func (y *Cloud189PC) refreshSession() (err error) {
 	}()
 
 	if erron.HasError() {
-		if y.Username == "" && y.Password == "" {
-			return fmt.Errorf("access_token invalid or expired")
+		if y.Username == "" || y.Password == "" {
+			return fmt.Errorf("access_token invalid or expired: %w", &erron)
 		}
-		if erron.ResCode == "UserInvalidOpenToken" {
+		if fmt.Sprint(erron.ResCode) == "UserInvalidOpenToken" {
 			if err = y.login(); err != nil {
 				return err
 			}
+			op.MustSaveDriverStorage(y)
+			return nil
 		}
 		return &erron
 	}
