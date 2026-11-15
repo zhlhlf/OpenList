@@ -27,6 +27,7 @@ type Cloud189PC struct {
 
 	loginParam *LoginParam
 	tokenInfo  *AppSessionResp
+	loggingIn  bool
 
 	uploadThread int
 

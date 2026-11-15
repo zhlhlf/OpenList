@@ -260,7 +260,9 @@ func (y *Cloud189PC) findFileByName(ctx context.Context, searchName string, fold
 	}
 }
 
-func (y *Cloud189PC) login() (err error) {
+// loginByWeb 旧的 Web/PC 登录：unifyLoginForPC 取 lt/paramId -> loginSubmit -> getSessionForPC。
+// 现在只作为兜底保留。
+func (y *Cloud189PC) loginByWeb() (err error) {
 	// 鍒濆鍖栫櫥闄嗘墍闇€鍙傛暟
 	if y.loginParam == nil {
 		if err = y.initLoginParam(); err != nil {
@@ -427,7 +429,21 @@ func (y *Cloud189PC) initLoginParam() error {
 }
 
 // 鍒锋柊浼氳瘽
+// refreshSession 先走 App 端 login4MergedClient，失败再回落 PC 的 getSessionForPC
 func (y *Cloud189PC) refreshSession() (err error) {
+	if y.ref != nil {
+		return y.ref.refreshSession()
+	}
+	if err = y.refreshSessionByApp(); err == nil {
+		return nil
+	}
+	if y.Username == "" || y.Password == "" {
+		return err
+	}
+	return y.refreshSessionByPC()
+}
+
+func (y *Cloud189PC) refreshSessionByPC() (err error) {
 	if y.ref != nil {
 		return y.ref.refreshSession()
 	}
