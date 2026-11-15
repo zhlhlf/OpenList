@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
+
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
 )
 
@@ -327,6 +329,7 @@ func (y *Cloud189PC) loginByApp() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	utils.Log.Debugf("[189pc] loginByApp: 登录接口返回 result=%d msg=%s", resp.Result, resp.Msg)
 	paras := q.Get("paras")
 	if paras == "" {
 		return "", fmt.Errorf("189 app login: returnParas 里没有 paras 字段")
@@ -358,15 +361,20 @@ func (y *Cloud189PC) login() (err error) {
 		return fmt.Errorf("189: 用户名或密码为空")
 	}
 
+	utils.Log.Debugf("[189pc] login: 使用 App 方案 (账号密码 + oAuth2SdkLoginByPassword), user=%s", y.Username)
 	token, err := y.loginByApp()
 	if err != nil {
+		utils.Log.Debugf("[189pc] login: App 登录失败: %v", err)
 		return err
 	}
+	utils.Log.Debugf("[189pc] login: 拿到 accessToken=%s, 开始换取会话", maskToken(token))
 	y.tokenInfo = &AppSessionResp{AccessToken: token}
 	y.updateValue(&y.AccessToken, token)
 	if err = y.refreshSession(); err != nil {
+		utils.Log.Debugf("[189pc] login: 换取会话失败: %v", err)
 		return err
 	}
+	utils.Log.Debugf("[189pc] login: 登录完成, accessToken=%s sessionKey=%s", maskToken(y.AccessToken), y.tokenInfo.SessionKey)
 	op.MustSaveDriverStorage(y)
 	return nil
 }
@@ -374,6 +382,7 @@ func (y *Cloud189PC) login() (err error) {
 // refreshSessionByApp 用 App 端 login4MergedClient 换 sessionKey / sessionSecret。
 // accessToken 走 epkey 方案：随机 K + AES-CBC 加密 param，K 用服务端 RSA 公钥包成 epkey。
 func (y *Cloud189PC) refreshSessionByApp() error {
+	utils.Log.Debugf("[189pc] refreshSessionByApp: 请求 generateRsaKey")
 	var g struct {
 		ResCode    int    `json:"res_code"`
 		ResMessage string `json:"res_message"`
@@ -477,10 +486,13 @@ func (y *Cloud189PC) refreshSessionByApp() error {
 		FamilySessionKey:    us.FamilySessionKey,
 		FamilySessionSecret: us.FamilySessionSecret,
 	}
-	if us.EAccessToken != "" {
+	if us.EAccessToken != "" && us.EAccessToken != y.tokenInfo.AccessToken {
+		utils.Log.Debugf("[189pc] refreshSessionByApp: accessToken 已更新 %s -> %s",
+			maskToken(y.tokenInfo.AccessToken), maskToken(us.EAccessToken))
 		y.tokenInfo.AccessToken = us.EAccessToken
 		y.updateValue(&y.AccessToken, us.EAccessToken)
 	}
+	utils.Log.Debugf("[189pc] refreshSessionByApp: 成功 pkId=%s sessionKey=%s", g.PkID, us.SessionKey)
 	return nil
 }
 

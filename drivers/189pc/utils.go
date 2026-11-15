@@ -434,13 +434,38 @@ func (y *Cloud189PC) refreshSession() (err error) {
 	if y.ref != nil {
 		return y.ref.refreshSession()
 	}
-	if err = y.refreshSessionByApp(); err == nil {
+	utils.Log.Debugf("[189pc] refreshSession: 使用 App 方案 (login4MergedClient), accessToken=%s", maskToken(y.tokenInfo.AccessToken))
+	appErr := y.refreshSessionByApp()
+	if appErr == nil {
+		utils.Log.Debugf("[189pc] refreshSession: App 方案成功, sessionKey=%s", y.tokenInfo.SessionKey)
+		if y.GetStorage().ID != 0 {
+			op.MustSaveDriverStorage(y)
+		}
 		return nil
 	}
-	if y.Username == "" || y.Password == "" {
-		return err
+	utils.Log.Debugf("[189pc] refreshSession: App 方案失败(%v), 回落 PC 方案 (getSessionForPC)", appErr)
+
+	pcErr := y.refreshSessionByPC()
+	if pcErr == nil {
+		utils.Log.Debugf("[189pc] refreshSession: PC 方案成功, sessionKey=%s", y.tokenInfo.SessionKey)
+		if y.GetStorage().ID != 0 {
+			op.MustSaveDriverStorage(y)
+		}
+		return nil
 	}
-	return y.refreshSessionByPC()
+	utils.Log.Debugf("[189pc] refreshSession: PC 方案失败(%v)", pcErr)
+	if y.Username == "" || y.Password == "" {
+		return fmt.Errorf("刷新会话失败: app=%v; pc=%v", appErr, pcErr)
+	}
+	return pcErr
+}
+
+// maskToken 只打印 token 首尾，避免日志泄漏
+func maskToken(t string) string {
+	if len(t) <= 10 {
+		return t
+	}
+	return t[:6] + "***" + t[len(t)-4:]
 }
 
 func (y *Cloud189PC) refreshSessionByPC() (err error) {
@@ -465,7 +490,9 @@ func (y *Cloud189PC) refreshSessionByPC() (err error) {
 	defer func() {
 		if err != nil {
 			y.GetStorage().SetStatus(fmt.Sprintf("%+v", err.Error()))
-			op.MustSaveDriverStorage(y)
+			if y.GetStorage().ID != 0 {
+				op.MustSaveDriverStorage(y)
+			}
 		}
 	}()
 
@@ -474,6 +501,10 @@ func (y *Cloud189PC) refreshSessionByPC() (err error) {
 			return fmt.Errorf("access_token invalid or expired: %w", &erron)
 		}
 		if fmt.Sprint(erron.ResCode) == "UserInvalidOpenToken" {
+			if y.loggingIn {
+				return &erron
+			}
+			utils.Log.Debugf("[189pc] refreshSession: token 失效, 用账号密码重新登录")
 			if err = y.login(); err != nil {
 				return err
 			}
@@ -498,7 +529,9 @@ func (y *Cloud189PC) useAccessTokenAndInit(accessToken string) error {
 	defer func() {
 		if err != nil {
 			y.GetStorage().SetStatus(fmt.Sprintf("%+v", err.Error()))
-			op.MustSaveDriverStorage(y)
+			if y.GetStorage().ID != 0 {
+				op.MustSaveDriverStorage(y)
+			}
 		}
 	}()
 
