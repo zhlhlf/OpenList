@@ -1,0 +1,64 @@
+name: Release Lite builds (amd64/arm64)
+
+# 快速出包：只构建 linux-amd64 / linux-arm64 两个静态二进制
+# 推送即触发；完整的多平台构建见 release.yml（仅手动触发）
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Prepare Release Context
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.release_vars.outputs.tag_name }}
+    steps:
+      - name: Compute release variables
+        id: release_vars
+        shell: bash
+        run: echo "tag_name=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build linux-amd64 + linux-arm64
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.4'
+          cache: true
+
+      - name: Build amd64 + arm64
+        run: bash build.sh release quick
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FRONTEND_REPO: ${{ vars.FRONTEND_REPO || 'zhlhlf/OpenList-Frontend' }}
+
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/compress/*
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          prerelease: true
+          overwrite_files: true
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openlist-lite-${{ needs.prepare.outputs.tag_name }}
+          path: build/compress/*
+          retention-days: 14
+          if-no-files-found: error

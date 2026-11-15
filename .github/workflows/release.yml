@@ -1,8 +1,7 @@
 name: Release builds
 
 on:
-  push:
-
+  # 推送只跑 build-release-lite.yml（amd64/arm64）；完整多平台构建仅手动触发
   workflow_dispatch:
     inputs:
       useCustomFrontend:

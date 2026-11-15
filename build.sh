@@ -557,6 +557,18 @@ BuildReleaseFreeBSD() {
   done
 }
 
+BuildReleaseQuick() {
+  mkdir -p "build"
+  # 只出 amd64/arm64 两个 linux 目标，纯 Go 静态编译（sqlite 走 glebarez 纯 Go 实现，无需 CGO）
+  for arch in amd64 arm64; do
+    echo building for linux-${arch}
+    export GOOS=linux
+    export GOARCH=${arch}
+    export CGO_ENABLED=0
+    go build -o ./build/$appName-linux-${arch} -ldflags="$ldflags" -tags=jsoniter .
+  done
+}
+
 MakeRelease() {
   cd build
   if [ -d compress ]; then
@@ -620,7 +632,7 @@ for arg in "$@"; do
         buildType="$arg"
       fi
       ;;
-    docker|docker-multiplatform|linux_musl_arm|linux_musl|android|freebsd|web)
+    docker|docker-multiplatform|linux_musl_arm|linux_musl|android|freebsd|web|quick)
       if [ -z "$dockerType" ]; then
         dockerType="$arg"
       fi
@@ -685,6 +697,13 @@ elif [ "$buildType" = "release" -o "$buildType" = "beta" ]; then
     else
       MakeRelease "md5-freebsd.txt"
     fi
+  elif [ "$dockerType" = "quick" ]; then
+    BuildReleaseQuick
+    if [ "$useLite" = true ]; then
+      MakeRelease "md5-quick-lite.txt"
+    else
+      MakeRelease "md5-quick.txt"
+    fi
   elif [ "$dockerType" = "web" ]; then
     echo "web only"
   else
@@ -721,7 +740,7 @@ elif [ "$buildType" = "zip" ]; then
   fi
 else
   echo -e "Parameter error"
-  echo -e "Usage: $0 {dev|beta|release|zip|prepare} [docker|docker-multiplatform|linux_musl_arm|linux_musl|android|freebsd|web] [lite] [other_params]"
+  echo -e "Usage: $0 {dev|beta|release|zip|prepare} [docker|docker-multiplatform|linux_musl_arm|linux_musl|android|freebsd|web|quick] [lite] [other_params]"
   echo -e "Examples:"
   echo -e "  $0 dev"
   echo -e "  $0 dev lite"
@@ -731,4 +750,5 @@ else
   echo -e "  $0 release lite"
   echo -e "  $0 release docker lite"
   echo -e "  $0 release linux_musl"
+  echo -e "  $0 release quick          # 只构建 linux-amd64 / linux-arm64 静态二进制"
 fi
