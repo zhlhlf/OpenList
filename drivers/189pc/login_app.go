@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -227,9 +228,26 @@ type appDeviceInfo struct {
 	MobileModel  string `json:"mobileModel"`
 }
 
+// flexInt 189 接口的 result / res_code 有时是数字、有时是字符串（"0"）
+type flexInt int
+
+func (n *flexInt) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), `"`)
+	if s == "" || s == "null" {
+		*n = 0
+		return nil
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return fmt.Errorf("flexInt: 无法解析 %q", s)
+	}
+	*n = flexInt(v)
+	return nil
+}
+
 type appEncryptConfResp struct {
-	Result int    `json:"result"`
-	Msg    string `json:"msg"`
+	Result flexInt `json:"result"`
+	Msg    string  `json:"msg"`
 	Data   struct {
 		Pre    string `json:"pre"`
 		PubKey string `json:"pubKey"`
@@ -237,9 +255,9 @@ type appEncryptConfResp struct {
 }
 
 type appLoginResp struct {
-	Result      int    `json:"result"`
-	Msg         string `json:"msg"`
-	ReturnParas string `json:"returnParas"`
+	Result      flexInt `json:"result"`
+	Msg         string  `json:"msg"`
+	ReturnParas string  `json:"returnParas"`
 }
 
 type appUserSessionResp struct {
@@ -316,8 +334,8 @@ func (y *Cloud189PC) loginByApp() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if resp.Result != 0 {
-		return "", fmt.Errorf("189 app login 失败: result=%d msg=%s", resp.Result, resp.Msg)
+	if int(resp.Result) != 0 {
+		return "", fmt.Errorf("189 app login 失败: result=%d msg=%s", int(resp.Result), resp.Msg)
 	}
 
 	// returnParas 是 urlencoded，里面 paras 是 XXTEA hex
@@ -329,7 +347,7 @@ func (y *Cloud189PC) loginByApp() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	utils.Log.Debugf("[189pc] loginByApp: 登录接口返回 result=%d msg=%s", resp.Result, resp.Msg)
+	utils.Log.Debugf("[189pc] loginByApp: 登录接口返回 result=%d msg=%s", int(resp.Result), resp.Msg)
 	paras := q.Get("paras")
 	if paras == "" {
 		return "", fmt.Errorf("189 app login: returnParas 里没有 paras 字段")
@@ -384,11 +402,11 @@ func (y *Cloud189PC) login() (err error) {
 func (y *Cloud189PC) refreshSessionByApp() error {
 	utils.Log.Debugf("[189pc] refreshSessionByApp: 请求 generateRsaKey")
 	var g struct {
-		ResCode    int    `json:"res_code"`
-		ResMessage string `json:"res_message"`
-		PkID       string `json:"pkId"`
-		PubKey     string `json:"pubKey"`
-		Ver        string `json:"ver"`
+		ResCode    flexInt `json:"res_code"`
+		ResMessage string  `json:"res_message"`
+		PkID       string  `json:"pkId"`
+		PubKey     string  `json:"pubKey"`
+		Ver        string  `json:"ver"`
 	}
 	_, err := y.client.R().
 		ForceContentType("application/json;charset=UTF-8").
@@ -407,7 +425,7 @@ func (y *Cloud189PC) refreshSessionByApp() error {
 		return err
 	}
 	if g.PkID == "" || g.PubKey == "" {
-		return fmt.Errorf("189 app: generateRsaKey 失败 res_code=%d msg=%s", g.ResCode, g.ResMessage)
+		return fmt.Errorf("189 app: generateRsaKey 失败 res_code=%d msg=%s", int(g.ResCode), g.ResMessage)
 	}
 
 	ts := fmt.Sprintf("%d", time.Now().UnixMilli())
