@@ -1,6 +1,6 @@
 name: Release Lite builds (amd64/arm64)
 
-# 快速出包：只构建 linux-amd64 / linux-arm64 两个静态二进制
+# 快速出包：linux amd64/arm64，glibc(纯 Go 静态) + musl(静态) 两路并行构建
 # 推送即触发；完整的多平台构建见 release.yml（仅手动触发）
 on:
   push:
@@ -12,6 +12,9 @@ concurrency:
 
 permissions:
   contents: write
+
+env:
+  FRONTEND_REPO: ${{ vars.FRONTEND_REPO || 'zhlhlf/OpenList-Frontend' }}
 
 jobs:
   prepare:
@@ -25,9 +28,8 @@ jobs:
         shell: bash
         run: echo "tag_name=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-  build:
-    name: Build linux-amd64 + linux-arm64
-    needs: prepare
+  build-linux:
+    name: Build linux-amd64/arm64 (pure Go)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -41,16 +43,67 @@ jobs:
           go-version: '1.26.4'
           cache: true
 
-      - name: Build amd64 + arm64 (lite frontend, -lite naming)
+      - name: Build
         run: bash build.sh release quick lite
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FRONTEND_REPO: ${{ vars.FRONTEND_REPO || 'zhlhlf/OpenList-Frontend' }}
 
-      - name: Upload assets to release
+      - name: Upload intermediate
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-purego
+          path: build/compress/*
+          if-no-files-found: error
+
+  build-linux-musl:
+    name: Build linux-musl-amd64/arm64 (static musl)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.4'
+          cache: true
+
+      - name: Build
+        run: bash build.sh release musl_quick lite
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload intermediate
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-musl
+          path: build/compress/*
+          if-no-files-found: error
+
+  release:
+    name: Merge and publish release
+    needs: [prepare, build-linux, build-linux-musl]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download both build outputs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          merge-multiple: true
+          path: dist
+
+      - name: Combine checksums
+        run: |
+          cd dist
+          rm -f md5*.txt
+          md5sum *.tar.gz | tee md5-lite.txt
+
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: build/compress/*
+          files: dist/*
           tag_name: ${{ needs.prepare.outputs.tag_name }}
           prerelease: true
           overwrite_files: true
@@ -59,6 +112,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: openlist-${{ needs.prepare.outputs.tag_name }}-lite
-          path: build/compress/*
+          path: dist/*
           retention-days: 14
           if-no-files-found: error

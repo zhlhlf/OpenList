@@ -569,6 +569,33 @@ BuildReleaseQuick() {
   done
 }
 
+BuildReleaseMuslQuick() {
+  mkdir -p "build"
+  muslflags="$(GetMuslStaticLdflags)"
+  BASE="https://github.com/OpenListTeam/musl-compilers/releases/latest/download/"
+  # 只下 amd64 / arm64 两个交叉工具链，其余架构不参与
+  FILES=(x86_64-linux-musl-cross aarch64-linux-musl-cross)
+  for i in "${FILES[@]}"; do
+    url="${BASE}${i}.tgz"
+    curl -fsSL -o "${i}.tgz" "${url}"
+    sudo tar xf "${i}.tgz" --strip-components 1 -C /usr/local
+    rm -f "${i}.tgz"
+  done
+  OS_ARCHES=(linux-musl-amd64 linux-musl-arm64)
+  CGO_ARGS=(x86_64-linux-musl-gcc aarch64-linux-musl-gcc)
+  for i in "${!OS_ARCHES[@]}"; do
+    os_arch=${OS_ARCHES[$i]}
+    cgo_cc=${CGO_ARGS[$i]}
+    echo building for ${os_arch}
+    export GOOS=${os_arch%%-*}
+    export GOARCH=${os_arch##*-}
+    export CC=${cgo_cc}
+    export CGO_ENABLED=1
+    CGO_LDFLAGS="-static" go build -o ./build/$appName-$os_arch -ldflags="$muslflags" -tags=jsoniter .
+    AssertStaticBinary "./build/$appName-$os_arch"
+  done
+}
+
 MakeRelease() {
   cd build
   if [ -d compress ]; then
@@ -632,7 +659,7 @@ for arg in "$@"; do
         buildType="$arg"
       fi
       ;;
-    docker|docker-multiplatform|linux_musl_arm|linux_musl|android|freebsd|web|quick)
+    docker|docker-multiplatform|linux_musl_arm|linux_musl|android|freebsd|web|quick|musl_quick)
       if [ -z "$dockerType" ]; then
         dockerType="$arg"
       fi
@@ -704,6 +731,13 @@ elif [ "$buildType" = "release" -o "$buildType" = "beta" ]; then
     else
       MakeRelease "md5-quick.txt"
     fi
+  elif [ "$dockerType" = "musl_quick" ]; then
+    BuildReleaseMuslQuick
+    if [ "$useLite" = true ]; then
+      MakeRelease "md5-musl-quick-lite.txt"
+    else
+      MakeRelease "md5-musl-quick.txt"
+    fi
   elif [ "$dockerType" = "web" ]; then
     echo "web only"
   else
@@ -740,7 +774,7 @@ elif [ "$buildType" = "zip" ]; then
   fi
 else
   echo -e "Parameter error"
-  echo -e "Usage: $0 {dev|beta|release|zip|prepare} [docker|docker-multiplatform|linux_musl_arm|linux_musl|android|freebsd|web|quick] [lite] [other_params]"
+  echo -e "Usage: $0 {dev|beta|release|zip|prepare} [docker|docker-multiplatform|linux_musl_arm|linux_musl|android|freebsd|web|quick|musl_quick] [lite] [other_params]"
   echo -e "Examples:"
   echo -e "  $0 dev"
   echo -e "  $0 dev lite"
@@ -751,4 +785,5 @@ else
   echo -e "  $0 release docker lite"
   echo -e "  $0 release linux_musl"
   echo -e "  $0 release quick          # 只构建 linux-amd64 / linux-arm64 静态二进制"
+  echo -e "  $0 release musl_quick     # 只构建 linux-musl-amd64 / linux-musl-arm64（静态 musl）"
 fi
