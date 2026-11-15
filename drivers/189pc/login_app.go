@@ -319,7 +319,7 @@ func (y *Cloud189PC) loginByApp() (string, error) {
 			"dynamicCheck":   "false",
 			"userName":       encConf.Data.Pre + RsaEncrypt(pubPem, y.Username),
 			"password":       encConf.Data.Pre + RsaEncrypt(pubPem, y.Password),
-			"validateCode":   "",
+			"validateCode":   y.VCode,
 			"captchaToken":   "",
 			"jointWay":       "1|2",
 			"jointVersion":   APP_LOGIN_JOINT_VER,
@@ -335,7 +335,7 @@ func (y *Cloud189PC) loginByApp() (string, error) {
 		return "", err
 	}
 	if int(resp.Result) != 0 {
-		return "", fmt.Errorf("189 app login 失败: result=%d msg=%s", int(resp.Result), resp.Msg)
+		return "", fmt.Errorf("189 app login 失败: %s", appLoginErrText(int(resp.Result), resp.Msg))
 	}
 
 	// returnParas 是 urlencoded，里面 paras 是 XXTEA hex
@@ -365,6 +365,22 @@ func (y *Cloud189PC) loginByApp() (string, error) {
 		return "", fmt.Errorf("189 app login: paras 里没有 accessToken")
 	}
 	return token, nil
+}
+
+// appLoginErrText 把 189 的返回码翻译成能直接照做的提示
+func appLoginErrText(code int, msg string) string {
+	switch code {
+	case -2:
+		return fmt.Sprintf("result=-2 需要验证码（%s）：请先在天翼云盘 App 或网页版登录一次通过风控，或在存储配置的 validate_code 里填入验证码", msg)
+	case -133:
+		return fmt.Sprintf("result=-133 设备锁（%s）：该账号需短信/设备验证，请先在官方客户端登录并解除异常", msg)
+	case -149:
+		return fmt.Sprintf("result=-149 用户名不合法（%s）：账号格式不对，或加密前缀与服务端要求不匹配", msg)
+	case -51002:
+		return fmt.Sprintf("result=-51002 账号或密码错误（%s）：核对密码；若密码正确通常是短时间内多次登录失败被临时限制，等 10-30 分钟或先在官方 App 登录一次再试", msg)
+	default:
+		return fmt.Sprintf("result=%d msg=%s", code, msg)
+	}
 }
 
 // login 用 App 方式登录并刷新会话
