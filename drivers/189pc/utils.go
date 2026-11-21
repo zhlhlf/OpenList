@@ -454,10 +454,19 @@ func (y *Cloud189PC) refreshSession() (err error) {
 		return nil
 	}
 	utils.Log.Debugf("[189pc] refreshSession: PC 方案失败(%v)", pcErr)
-	if y.Username == "" || y.Password == "" {
+	if y.Username == "" || y.Password == "" || y.loggingIn {
 		return fmt.Errorf("刷新会话失败: app=%v; pc=%v", appErr, pcErr)
 	}
-	return pcErr
+
+	utils.Log.Debugf("[189pc] refreshSession: App/PC 方案均失败, 使用账号密码重新登录")
+	if loginErr := y.login(); loginErr != nil {
+		return fmt.Errorf("刷新会话失败: app=%v; pc=%v; login=%v", appErr, pcErr, loginErr)
+	}
+	if y.GetStorage().ID != 0 {
+		y.GetStorage().SetStatus(op.WORK)
+		op.MustSaveDriverStorage(y)
+	}
+	return nil
 }
 
 // maskToken 只打印 token 首尾，避免日志泄漏
@@ -473,9 +482,7 @@ func (y *Cloud189PC) refreshSessionByPC() (err error) {
 		return y.ref.refreshSession()
 	}
 	var erron RespErr
-	var userSessionResp UserSessionResp
-	_, err = y.client.R().
-		SetResult(&userSessionResp).SetError(&erron).
+	res, err := y.client.R().
 		SetQueryParams(clientSuffix()).
 		SetQueryParams(map[string]string{
 			"appId":       APP_ID,
@@ -496,22 +503,22 @@ func (y *Cloud189PC) refreshSessionByPC() (err error) {
 		}
 	}()
 
+	// getSessionForPC 在 token 失效时可能仍返回 HTTP 200，SetError 不会触发，
+	// 必须直接解析响应体，否则会被误判为刷新成功。
+	_ = jsoniter.Unmarshal(res.Body(), &erron)
+	_ = xml.Unmarshal(res.Body(), &erron)
 	if erron.HasError() {
-		if y.Username == "" || y.Password == "" {
-			return fmt.Errorf("access_token invalid or expired: %w", &erron)
-		}
-		if fmt.Sprint(erron.ResCode) == "UserInvalidOpenToken" {
-			if y.loggingIn {
-				return &erron
-			}
-			utils.Log.Debugf("[189pc] refreshSession: token 失效, 用账号密码重新登录")
-			if err = y.login(); err != nil {
-				return err
-			}
-			op.MustSaveDriverStorage(y)
-			return nil
-		}
 		return &erron
+	}
+
+	var userSessionResp UserSessionResp
+	if err = jsoniter.Unmarshal(res.Body(), &userSessionResp); err != nil {
+		if xmlErr := xml.Unmarshal(res.Body(), &userSessionResp); xmlErr != nil {
+			return fmt.Errorf("getSessionForPC 解析响应失败: json=%v; xml=%v; body=%s", err, xmlErr, truncate(res.String(), 200))
+		}
+	}
+	if userSessionResp.SessionKey == "" {
+		return fmt.Errorf("getSessionForPC 响应中没有 sessionKey: %s", truncate(res.String(), 200))
 	}
 	y.tokenInfo.UserSessionResp = userSessionResp
 	return
