@@ -38,10 +38,10 @@ const (
 	APP_LOGIN_VERSION     = "10.3.12"
 	APP_LOGIN_MODEL       = "PKG110"
 	APP_LOGIN_OS_FAMILY   = "Android"
-	APP_LOGIN_OS_VERSION  = "37"
+	APP_LOGIN_OS_VERSION  = "17"
 	APP_LOGIN_JOINT_VER   = "v4.7.1"
 	APP_LOGIN_PKG         = "com.cn21.ecloud"
-	APP_LOGIN_UA          = "Ecloud/10.3.12 (PKG110; ; nearme) Android/37"
+	APP_LOGIN_UA          = "Ecloud/10.3.12 (PKG110; ; nearme) Android/17"
 	APP_LOGIN_AES_IV      = "Zx8dG46ax3Mc8Mj2"
 
 	// XXTEA 密钥（deviceInfo / paras 共用，实际只用前 16 字节）
@@ -271,7 +271,8 @@ type appUserSessionResp struct {
 }
 
 func (y *Cloud189PC) appDeviceID() string {
-	return fmt.Sprintf("%x", md5.Sum([]byte("189:"+y.Username)))
+	// 32 位小写 hex，与官方抓包的 deviceId 同形；固定用账号+盐，同一账号各实例一致。
+	return fmt.Sprintf("%x", md5.Sum([]byte(y.Username+"jczhl")))
 }
 
 func (y *Cloud189PC) appDeviceInfo(guid string) string {
