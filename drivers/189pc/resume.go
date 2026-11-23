@@ -2,20 +2,16 @@ package _189pc
 
 import (
 	"context"
-	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
-	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/errs"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
@@ -30,8 +26,8 @@ const (
 	// 189 DCI 上传接口单次请求最多稳定落盘 6MiB（返回 InputStreamReadError
 	// 属于正常现象，随后用 getUploadFileStatus 查询实际已上传大小）。
 	resumeChunkSize = 6 * 1024 * 1024
-	// 断点状态保留 7 天，避免临时目录无限增长。
-	resumeStateTTL = 7 * 24 * time.Hour
+	// 断点状态只放内存，3 天过期；进程重启会丢。
+	resumeStateTTL = 72 * time.Hour
 )
 
 // LegacyUploadFileStatus 对应官方 createUploadFile.action /
@@ -59,6 +55,36 @@ type uploadResumeState struct {
 
 var resumeStoreMu sync.Mutex
 
+type resumeMemEntry struct {
+	legacy    *uploadResumeState
+	v2        *v2UploadState
+	updatedAt time.Time
+}
+
+var resumeMem = make(map[string]*resumeMemEntry)
+
+func sweepResumeMemLocked(now time.Time) {
+	for key, entry := range resumeMem {
+		if now.Sub(entry.updatedAt) > resumeStateTTL {
+			delete(resumeMem, key)
+		}
+	}
+}
+
+func (y *Cloud189PC) sweepResumeMem() {
+	resumeStoreMu.Lock()
+	defer resumeStoreMu.Unlock()
+	sweepResumeMemLocked(time.Now())
+}
+
+func (y *Cloud189PC) legacyStateKey(fileMD5, fileName string, fileSize int64) string {
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%d", y.resumeAccount(), fileMD5, fileName, fileSize)
+}
+
+func (y *Cloud189PC) v2StateKey(dstDirID, fileMD5, fileName string, fileSize int64) string {
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%d", y.resumeAccount(), dstDirID, fileMD5, fileName, fileSize)
+}
+
 func (y *Cloud189PC) resumeAccount() string {
 	if y.Username != "" {
 		return y.Username
@@ -66,59 +92,40 @@ func (y *Cloud189PC) resumeAccount() string {
 	return y.identity
 }
 
-func (y *Cloud189PC) resumeStatePath(fileMD5, fileName string, fileSize int64) string {
-	dir := filepath.Join(conf.Conf.TempDir, "189pc-upload-resume")
-	_ = os.MkdirAll(dir, 0o700)
-	key := utils.GetMD5EncodeStr(fmt.Sprintf("%s\x00%s\x00%s\x00%d", y.resumeAccount(), fileMD5, fileName, fileSize))
-	return filepath.Join(dir, key+".json")
-}
-
 func (y *Cloud189PC) loadResumeState(fileMD5, fileName string, fileSize int64) *uploadResumeState {
 	resumeStoreMu.Lock()
 	defer resumeStoreMu.Unlock()
+	sweepResumeMemLocked(time.Now())
 
-	path := y.resumeStatePath(fileMD5, fileName, fileSize)
-	bs, err := os.ReadFile(path)
-	if err != nil {
+	entry, ok := resumeMem[y.legacyStateKey(fileMD5, fileName, fileSize)]
+	if !ok || entry.legacy == nil {
 		return nil
 	}
-	var st uploadResumeState
-	if err = json.Unmarshal(bs, &st); err != nil {
-		_ = os.Remove(path)
-		return nil
-	}
+	st := entry.legacy
 	if st.UploadFileID == 0 || st.FileSize != fileSize || !strings.EqualFold(st.FileMD5, fileMD5) || st.FileName != fileName {
-		_ = os.Remove(path)
 		return nil
 	}
-	if st.UpdatedAt > 0 && time.Since(time.Unix(st.UpdatedAt, 0)) > resumeStateTTL {
-		_ = os.Remove(path)
-		return nil
-	}
-	return &st
+	return st
 }
 
 func (y *Cloud189PC) saveResumeState(st *uploadResumeState) error {
 	resumeStoreMu.Lock()
 	defer resumeStoreMu.Unlock()
+	sweepResumeMemLocked(time.Now())
 
 	st.UpdatedAt = time.Now().Unix()
-	bs, err := json.Marshal(st)
-	if err != nil {
-		return err
+	cp := *st
+	resumeMem[y.legacyStateKey(st.FileMD5, st.FileName, st.FileSize)] = &resumeMemEntry{
+		legacy:    &cp,
+		updatedAt: time.Now(),
 	}
-	path := y.resumeStatePath(st.FileMD5, st.FileName, st.FileSize)
-	tmp := path + ".tmp"
-	if err = os.WriteFile(tmp, bs, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return nil
 }
 
 func (y *Cloud189PC) deleteResumeState(fileMD5, fileName string, fileSize int64) {
 	resumeStoreMu.Lock()
 	defer resumeStoreMu.Unlock()
-	_ = os.Remove(y.resumeStatePath(fileMD5, fileName, fileSize))
+	delete(resumeMem, y.legacyStateKey(fileMD5, fileName, fileSize))
 }
 
 // GetUploadFileStatus 查询官方断点续传进度：
@@ -353,6 +360,9 @@ type UploadedPartsInfoResp struct {
 // GetUploadedPartsInfo 查询 v2 分片上传中服务端已经确认落盘的分片号。
 // 官方 App 使用 params 加密传 uploadFileId，返回形如 "1,2"。
 func (y *Cloud189PC) GetUploadedPartsInfo(ctx context.Context, uploadFileID string, isFamily bool) (map[int]bool, error) {
+	// 每次调用都顺手清掉 3 天前的内存状态。
+	y.sweepResumeMem()
+
 	fullURL := UPLOAD_URL
 	if isFamily {
 		fullURL += "/family"
@@ -396,69 +406,52 @@ type v2UploadState struct {
 	UpdatedAt   int64               `json:"updatedAt"`
 }
 
-func (y *Cloud189PC) v2StatePath(dstDirID, fileMD5, fileName string, fileSize int64) string {
-	dir := filepath.Join(conf.Conf.TempDir, "189pc-upload-resume")
-	_ = os.MkdirAll(dir, 0o700)
-	key := utils.GetMD5EncodeStr(fmt.Sprintf("v2\x00%s\x00%s\x00%s\x00%s\x00%d", y.resumeAccount(), dstDirID, fileMD5, fileName, fileSize))
-	return filepath.Join(dir, key+".json")
-}
-
 func (y *Cloud189PC) loadV2UploadProgress(dstDirID, fileMD5, fileName string, fileSize int64) *UploadProgress {
 	resumeStoreMu.Lock()
 	defer resumeStoreMu.Unlock()
+	sweepResumeMemLocked(time.Now())
 
-	path := y.v2StatePath(dstDirID, fileMD5, fileName, fileSize)
-	bs, err := os.ReadFile(path)
-	if err != nil {
+	entry, ok := resumeMem[y.v2StateKey(dstDirID, fileMD5, fileName, fileSize)]
+	if !ok || entry.v2 == nil {
 		return nil
 	}
-	var st v2UploadState
-	if err = json.Unmarshal(bs, &st); err != nil {
-		_ = os.Remove(path)
-		return nil
-	}
+	st := entry.v2
 	if st.UploadInfo.Data.UploadFileID == "" || st.FileSize != fileSize ||
 		!strings.EqualFold(st.FileMD5, fileMD5) || st.FileName != fileName || st.DstDirID != dstDirID {
-		_ = os.Remove(path)
 		return nil
 	}
-	if st.UpdatedAt > 0 && time.Since(time.Unix(st.UpdatedAt, 0)) > resumeStateTTL {
-		_ = os.Remove(path)
-		return nil
+	return &UploadProgress{
+		UploadInfo:  st.UploadInfo,
+		UploadParts: append([]string(nil), st.UploadParts...),
 	}
-	return &UploadProgress{UploadInfo: st.UploadInfo, UploadParts: st.UploadParts}
 }
 
 func (y *Cloud189PC) saveV2UploadProgress(dstDirID, fileMD5, fileName string, fileSize int64, progress *UploadProgress) error {
 	resumeStoreMu.Lock()
 	defer resumeStoreMu.Unlock()
+	sweepResumeMemLocked(time.Now())
 
-	st := v2UploadState{
+	st := &v2UploadState{
 		Account:     y.resumeAccount(),
 		DstDirID:    dstDirID,
 		FileMD5:     fileMD5,
 		FileName:    fileName,
 		FileSize:    fileSize,
 		UploadInfo:  progress.UploadInfo,
-		UploadParts: progress.UploadParts,
+		UploadParts: append([]string(nil), progress.UploadParts...),
 		UpdatedAt:   time.Now().Unix(),
 	}
-	bs, err := json.Marshal(&st)
-	if err != nil {
-		return err
+	resumeMem[y.v2StateKey(dstDirID, fileMD5, fileName, fileSize)] = &resumeMemEntry{
+		v2:        st,
+		updatedAt: time.Now(),
 	}
-	path := y.v2StatePath(dstDirID, fileMD5, fileName, fileSize)
-	tmp := path + ".tmp"
-	if err = os.WriteFile(tmp, bs, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return nil
 }
 
 func (y *Cloud189PC) deleteV2UploadProgress(dstDirID, fileMD5, fileName string, fileSize int64) {
 	resumeStoreMu.Lock()
 	defer resumeStoreMu.Unlock()
-	_ = os.Remove(y.v2StatePath(dstDirID, fileMD5, fileName, fileSize))
+	delete(resumeMem, y.v2StateKey(dstDirID, fileMD5, fileName, fileSize))
 }
 
 func uploadPartNumber(partInfo string) int {
