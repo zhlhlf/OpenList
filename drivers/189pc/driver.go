@@ -420,6 +420,13 @@ func (y *Cloud189PC) putFile(ctx context.Context, dstDir model.Obj, stream model
 	}
 
 	switch uploadMethod {
+	case "resumable":
+		if isFamily || casMode {
+			// 官方断点续传接口目前只验证了个人云；家庭云/CAS 仍走多线程分片。
+			newObj, uploadInfo, err = y.FastUploadWithInfo(ctx, dstDir, stream, up, isFamily, overwrite)
+		} else {
+			newObj, err = y.ResumeUpload(ctx, dstDir, stream, up, overwrite)
+		}
 	case "rapid":
 		newObj, uploadInfo, err = y.FastUploadWithInfo(ctx, dstDir, stream, up, isFamily, overwrite)
 	default:

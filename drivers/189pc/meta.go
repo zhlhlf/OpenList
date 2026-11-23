@@ -15,7 +15,7 @@ type Addition struct {
 	OrderDirection string `json:"order_direction" type:"select" options:"asc,desc" default:"asc"`
 	Type           string `json:"type" type:"select" options:"personal,family" default:"personal"`
 	FamilyID       string `json:"family_id"`
-	UploadMethod   string `json:"upload_method" type:"select" options:"rapid" default:"rapid"`
+	UploadMethod   string `json:"upload_method" type:"select" options:"rapid,resumable" default:"rapid" help:"rapid=多线程分片上传；resumable=官方断点续传（上传中断/进程重启后可续传）"`
 	UploadThread   string `json:"upload_thread" default:"3" help:"1<=thread<=32"`
 	FamilyTransfer bool   `json:"family_transfer"`
 	EnableCAS      bool   `json:"enable_cas" help:"Upload real file data and keep a small .bin CAS placeholder"`
