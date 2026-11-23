@@ -43,6 +43,7 @@ type LegacyUploadFileStatus struct {
 
 type uploadResumeState struct {
 	Account       string `json:"account"`
+	DstDirID      string `json:"dstDirId"`
 	FileMD5       string `json:"fileMd5"`
 	FileName      string `json:"fileName"`
 	FileSize      int64  `json:"fileSize"`
@@ -77,8 +78,8 @@ func (y *Cloud189PC) sweepResumeMem() {
 	sweepResumeMemLocked(time.Now())
 }
 
-func resumeStateKey(fileMD5 string, fileSize int64) string {
-	return fmt.Sprintf("%s--%d", strings.ToUpper(fileMD5), fileSize)
+func resumeStateKey(dstDirID, fileMD5, fileName string, fileSize int64) string {
+	return fmt.Sprintf("%s--%d--%s--%s", strings.ToUpper(fileMD5), fileSize, dstDirID, fileName)
 }
 
 func (y *Cloud189PC) resumeAccount() string {
@@ -88,17 +89,18 @@ func (y *Cloud189PC) resumeAccount() string {
 	return y.identity
 }
 
-func (y *Cloud189PC) loadResumeState(fileMD5, fileName string, fileSize int64) *uploadResumeState {
+func (y *Cloud189PC) loadResumeState(dstDirID, fileMD5, fileName string, fileSize int64) *uploadResumeState {
 	resumeStoreMu.Lock()
 	defer resumeStoreMu.Unlock()
 	sweepResumeMemLocked(time.Now())
 
-	entry, ok := resumeMem[resumeStateKey(fileMD5, fileSize)]
+	entry, ok := resumeMem[resumeStateKey(dstDirID, fileMD5, fileName, fileSize)]
 	if !ok || entry.legacy == nil {
 		return nil
 	}
 	st := entry.legacy
-	if st.UploadFileID == 0 || st.FileSize != fileSize || !strings.EqualFold(st.FileMD5, fileMD5) || st.FileName != fileName {
+	if st.UploadFileID == 0 || st.FileSize != fileSize || !strings.EqualFold(st.FileMD5, fileMD5) ||
+		st.FileName != fileName || st.DstDirID != dstDirID {
 		return nil
 	}
 	return st
@@ -111,7 +113,7 @@ func (y *Cloud189PC) saveResumeState(st *uploadResumeState) error {
 
 	st.UpdatedAt = time.Now().Unix()
 	cp := *st
-	key := resumeStateKey(st.FileMD5, st.FileSize)
+	key := resumeStateKey(st.DstDirID, st.FileMD5, st.FileName, st.FileSize)
 	entry := resumeMem[key]
 	if entry == nil {
 		entry = &resumeMemEntry{}
@@ -122,10 +124,10 @@ func (y *Cloud189PC) saveResumeState(st *uploadResumeState) error {
 	return nil
 }
 
-func (y *Cloud189PC) deleteResumeState(fileMD5, fileName string, fileSize int64) {
+func (y *Cloud189PC) deleteResumeState(dstDirID, fileMD5, fileName string, fileSize int64) {
 	resumeStoreMu.Lock()
 	defer resumeStoreMu.Unlock()
-	key := resumeStateKey(fileMD5, fileSize)
+	key := resumeStateKey(dstDirID, fileMD5, fileName, fileSize)
 	if entry := resumeMem[key]; entry != nil {
 		entry.legacy = nil
 		if entry.v2 == nil {
@@ -269,7 +271,7 @@ func (y *Cloud189PC) ResumeUpload(ctx context.Context, dstDir model.Obj, file mo
 	fileMD5 = strings.ToUpper(fileMD5)
 	fileName := file.GetName()
 
-	state := y.loadResumeState(fileMD5, fileName, size)
+	state := y.loadResumeState(dstDir.GetID(), fileMD5, fileName, size)
 	if state == nil {
 		info, err := y.legacyCreateUploadFile(ctx, dstDir.GetID(), fileName, fileMD5, size, overwrite)
 		if err != nil {
@@ -277,6 +279,7 @@ func (y *Cloud189PC) ResumeUpload(ctx context.Context, dstDir model.Obj, file mo
 		}
 		state = &uploadResumeState{
 			Account:       y.resumeAccount(),
+			DstDirID:      dstDir.GetID(),
 			FileMD5:       fileMD5,
 			FileName:      fileName,
 			FileSize:      size,
@@ -347,7 +350,7 @@ func (y *Cloud189PC) ResumeUpload(ctx context.Context, dstDir model.Obj, file mo
 	if err != nil {
 		return nil, fmt.Errorf("189 resume upload: commit failed: %w", err)
 	}
-	y.deleteResumeState(fileMD5, fileName, size)
+	y.deleteResumeState(dstDir.GetID(), fileMD5, fileName, size)
 	up(100)
 	return obj, nil
 }
@@ -417,7 +420,7 @@ func (y *Cloud189PC) loadV2UploadProgress(dstDirID, fileMD5, fileName string, fi
 	defer resumeStoreMu.Unlock()
 	sweepResumeMemLocked(time.Now())
 
-	entry, ok := resumeMem[resumeStateKey(fileMD5, fileSize)]
+	entry, ok := resumeMem[resumeStateKey(dstDirID, fileMD5, fileName, fileSize)]
 	if !ok || entry.v2 == nil {
 		return nil
 	}
@@ -447,7 +450,7 @@ func (y *Cloud189PC) saveV2UploadProgress(dstDirID, fileMD5, fileName string, fi
 		UploadParts: append([]string(nil), progress.UploadParts...),
 		UpdatedAt:   time.Now().Unix(),
 	}
-	key := resumeStateKey(fileMD5, fileSize)
+	key := resumeStateKey(dstDirID, fileMD5, fileName, fileSize)
 	entry := resumeMem[key]
 	if entry == nil {
 		entry = &resumeMemEntry{}
@@ -461,7 +464,7 @@ func (y *Cloud189PC) saveV2UploadProgress(dstDirID, fileMD5, fileName string, fi
 func (y *Cloud189PC) deleteV2UploadProgress(dstDirID, fileMD5, fileName string, fileSize int64) {
 	resumeStoreMu.Lock()
 	defer resumeStoreMu.Unlock()
-	key := resumeStateKey(fileMD5, fileSize)
+	key := resumeStateKey(dstDirID, fileMD5, fileName, fileSize)
 	if entry := resumeMem[key]; entry != nil {
 		entry.v2 = nil
 		if entry.legacy == nil {

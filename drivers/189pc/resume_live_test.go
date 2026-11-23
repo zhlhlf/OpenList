@@ -57,7 +57,7 @@ func TestLiveResume(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		for {
-			st := y.loadResumeState(md5Hex, name, size)
+			st := y.loadResumeState("-11", md5Hex, name, size)
 			if st != nil && st.UploadedSize >= resumeChunkSize {
 				cancel()
 				return
@@ -76,7 +76,7 @@ func TestLiveResume(t *testing.T) {
 	}
 
 	// 直接查一次云端进度，证明 status 接口能拿到已上传大小。
-	state := y.loadResumeState(md5Hex, name, size)
+	state := y.loadResumeState("-11", md5Hex, name, size)
 	if state != nil {
 		st, serr := y.GetUploadFileStatus(context.Background(), state.UploadFileID, false)
 		if serr != nil {

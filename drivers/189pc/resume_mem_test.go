@@ -10,6 +10,7 @@ func TestSweepResumeMem(t *testing.T) {
 	y.Addition.Username = "test-user"
 
 	legacy := &uploadResumeState{
+		DstDirID:     "-11",
 		FileMD5:      "ABCDEF",
 		FileName:     "legacy.bin",
 		FileSize:     1024,
@@ -29,13 +30,13 @@ func TestSweepResumeMem(t *testing.T) {
 
 	// 把两条都改成 4 天前，模拟过期。
 	resumeStoreMu.Lock()
-	resumeMem[resumeStateKey("ABCDEF", 1024)].updatedAt = time.Now().Add(-4 * 24 * time.Hour)
-	resumeMem[resumeStateKey("ABCDEF", 2048)].updatedAt = time.Now().Add(-4 * 24 * time.Hour)
+	resumeMem[resumeStateKey("-11", "ABCDEF", "legacy.bin", 1024)].updatedAt = time.Now().Add(-4 * 24 * time.Hour)
+	resumeMem[resumeStateKey("-11", "ABCDEF", "v2.bin", 2048)].updatedAt = time.Now().Add(-4 * 24 * time.Hour)
 	resumeStoreMu.Unlock()
 
 	y.sweepResumeMem()
 
-	if got := y.loadResumeState("ABCDEF", "legacy.bin", 1024); got != nil {
+	if got := y.loadResumeState("-11", "ABCDEF", "legacy.bin", 1024); got != nil {
 		t.Fatalf("legacy state should be swept, got %+v", got)
 	}
 	if got := y.loadV2UploadProgress("-11", "ABCDEF", "v2.bin", 2048); got != nil {
