@@ -97,3 +97,76 @@ func TestLiveResume(t *testing.T) {
 		t.Logf("cleanup delete failed: %v", err)
 	}
 }
+
+// 实网测试 v2 分片：第一次传完 1/3 后取消，第二次通过
+// getUploadedPartsInfo 查到已上传分片并只补剩余分片。
+func TestLiveResumeV2(t *testing.T) {
+	token := os.Getenv("S189_AT")
+	if token == "" {
+		t.Skip("S189_AT not set")
+	}
+	conf.Conf = &conf.Config{TempDir: t.TempDir()}
+	base.InitClient()
+
+	y := &Cloud189PC{}
+	y.Addition.AccessToken = token
+	if err := y.Init(context.Background()); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	y.uploadThread = 1
+
+	const size = 30 * 1024 * 1024
+	// 每次用不同的内容，避免 189 秒传把测试变成 fileDataExists=1。
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	data := make([]byte, size)
+	_, _ = r.Read(data)
+	sum := md5.Sum(data)
+	md5Hex := fmt.Sprintf("%X", sum[:])
+	name := fmt.Sprintf("go-v2-resume-%d.bin", time.Now().UnixNano())
+	dst := &model.Object{ID: "-11"}
+	mkStream := func() model.FileStreamer {
+		return &stream.FileStream{
+			Ctx:      context.Background(),
+			Obj:      &model.Object{Name: name, Size: size},
+			Reader:   bytes.NewReader(data),
+			Mimetype: "application/octet-stream",
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_, _, err := y.FastUploadWithInfo(ctx, dst, mkStream(), func(p float64) {
+		t.Logf("first progress %.1f%%", p)
+		if p >= 30 {
+			cancel()
+		}
+	}, false, true)
+	cancel()
+	t.Logf("first attempt ended with: %v", err)
+	if err == nil {
+		t.Fatalf("first attempt unexpectedly completed")
+	}
+
+	state := y.loadV2UploadProgress("-11", md5Hex, name, size)
+	if state == nil {
+		t.Fatalf("no v2 state persisted")
+	}
+	uploaded, err := y.GetUploadedPartsInfo(context.Background(), state.UploadInfo.Data.UploadFileID, false)
+	if err != nil {
+		t.Fatalf("getUploadedPartsInfo: %v", err)
+	}
+	t.Logf("server uploaded parts: %v (uploadFileId=%s)", uploaded, state.UploadInfo.Data.UploadFileID)
+	if len(uploaded) == 0 {
+		t.Fatalf("server reported no uploaded parts")
+	}
+
+	obj, _, err := y.FastUploadWithInfo(context.Background(), dst, mkStream(), func(p float64) {
+		t.Logf("resume progress %.1f%%", p)
+	}, false, true)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	t.Logf("uploaded: name=%s id=%s", obj.GetName(), obj.GetID())
+	if err := y.Delete(context.Background(), "", obj); err != nil {
+		t.Logf("cleanup delete failed: %v", err)
+	}
+}

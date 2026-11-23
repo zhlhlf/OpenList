@@ -644,10 +644,11 @@ func (y *Cloud189PC) FastUploadWithInfo(ctx context.Context, dstDir model.Obj, f
 		//params.Set("extend", `{"opScene":"1","relativepath":"","rootfolderid":""}`)
 		fullUrl += "/person"
 	}
-	// 灏濊瘯鎭㈠杩涘害
-	uploadProgress, ok := base.GetUploadProgress[*UploadProgress](y, y.getTokenInfo().SessionKey, fileMd5Hex)
-	if !ok {
-		//step.2 棰勪笂浼?
+	// 尝试恢复进度：优先使用落盘的 uploadFileId，再向服务端确认已上传分片。
+	// getUploadedPartsInfo 是 v2 分片上传真正可用的进度接口（官方 App 同款）。
+	uploadProgress := y.loadV2UploadProgress(dstDir.GetID(), fileMd5Hex, file.GetName(), size)
+	if uploadProgress == nil {
+		// step.2 预上传
 		params := Params{
 			"parentFolderId": dstDir.GetID(),
 			"fileName":       url.QueryEscape(file.GetName()),
@@ -670,23 +671,54 @@ func (y *Cloud189PC) FastUploadWithInfo(ctx context.Context, dstDir model.Obj, f
 			UploadInfo:  uploadInfo,
 			UploadParts: partInfos,
 		}
+		if err = y.saveV2UploadProgress(dstDir.GetID(), fileMd5Hex, file.GetName(), size, uploadProgress); err != nil {
+			utils.Log.Warnf("189pc: save upload progress failed: %v", err)
+		}
 	}
 
 	uploadInfo := uploadProgress.UploadInfo.Data
-	// 缃戠洏涓笉瀛樺湪璇ユ枃浠讹紝寮€濮嬩笂浼?
+
+	// 向服务端确认已落盘分片；断点续传时以服务端结果为准。
 	if uploadInfo.FileDataExists != 1 {
+		if uploadedParts, err := y.GetUploadedPartsInfo(ctx, uploadInfo.UploadFileID, isFamily); err != nil {
+			utils.Log.Warnf("189pc: getUploadedPartsInfo failed: %v", err)
+		} else {
+			for i, uploadPart := range uploadProgress.UploadParts {
+				if uploadPart != "" && uploadedParts[uploadPartNumber(uploadPart)] {
+					uploadProgress.UploadParts[i] = ""
+				}
+			}
+		}
+	}
+
+	totalParts := len(uploadProgress.UploadParts)
+	completedParts := 0
+	for _, uploadPart := range uploadProgress.UploadParts {
+		if uploadPart == "" {
+			completedParts++
+		}
+	}
+	if totalParts > 0 && completedParts > 0 {
+		up(float64(completedParts) * 100 / float64(totalParts))
+	}
+
+	// 网盘中不存在该文件，开始上传剩余分片
+	if uploadInfo.FileDataExists != 1 && completedParts < totalParts {
 		threadG, upCtx := errgroup.NewGroupWithContext(ctx, y.uploadThread,
 			retry.Attempts(3),
 			retry.Delay(time.Second),
 			retry.DelayType(retry.BackOffDelay))
 		for i, uploadPart := range uploadProgress.UploadParts {
+			if uploadPart == "" {
+				continue
+			}
 			if utils.IsCanceled(upCtx) {
 				break
 			}
 
 			i, uploadPart := i, uploadPart
 			threadG.Go(func(ctx context.Context) error {
-				// step.3 鑾峰彇涓婁紶閾炬帴
+				// step.3 获取上传链接
 				uploadUrls, err := y.GetMultiUploadUrls(ctx, isFamily, uploadInfo.UploadFileID, uploadPart)
 				if err != nil {
 					return err
@@ -698,24 +730,23 @@ func (y *Cloud189PC) FastUploadWithInfo(ctx context.Context, dstDir model.Obj, f
 					byteSize = lastSliceSize
 				}
 
-				// step.4 涓婁紶鍒囩墖
+				// step.4 上传切片
 				_, err = y.put(ctx, uploadUrl.RequestURL, uploadUrl.Headers, false, io.NewSectionReader(cache, offset, byteSize), isFamily)
 				if err != nil {
 					return err
 				}
 
-				up(float64(threadG.Success()) * 100 / float64(len(uploadUrls)))
 				uploadProgress.UploadParts[i] = ""
+				up((float64(threadG.Success()) + float64(completedParts)) * 100 / float64(totalParts))
 				return nil
 			})
 		}
 		if err = threadG.Wait(); err != nil {
-			if errors.Is(err, context.Canceled) {
-				uploadProgress.UploadParts = utils.SliceFilter(uploadProgress.UploadParts, func(s string) bool { return s != "" })
-				base.SaveUploadProgress(y, uploadProgress, y.getTokenInfo().SessionKey, fileMd5Hex)
-			}
+			// 中断/失败也落盘，下一次启动按服务端分片结果续传。
+			_ = y.saveV2UploadProgress(dstDir.GetID(), fileMd5Hex, file.GetName(), size, uploadProgress)
 			return nil, nil, err
 		}
+		_ = y.saveV2UploadProgress(dstDir.GetID(), fileMd5Hex, file.GetName(), size, uploadProgress)
 	}
 
 	// step.5 鎻愪氦

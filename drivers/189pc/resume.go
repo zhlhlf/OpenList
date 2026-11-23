@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -336,4 +337,134 @@ func (y *Cloud189PC) ResumeUpload(ctx context.Context, dstDir model.Obj, file mo
 	y.deleteResumeState(fileMD5, fileName, size)
 	up(100)
 	return obj, nil
+}
+
+// UploadedPartsInfoResp 是 v2 分片上传的“已上传分片”查询返回。
+// GET /person/getUploadedPartsInfo 或 /family/getUploadedPartsInfo
+type UploadedPartsInfoResp struct {
+	Code string `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		UploadFileID     string `json:"uploadFileId"`
+		UploadedPartList string `json:"uploadedPartList"`
+	} `json:"data"`
+}
+
+// GetUploadedPartsInfo 查询 v2 分片上传中服务端已经确认落盘的分片号。
+// 官方 App 使用 params 加密传 uploadFileId，返回形如 "1,2"。
+func (y *Cloud189PC) GetUploadedPartsInfo(ctx context.Context, uploadFileID string, isFamily bool) (map[int]bool, error) {
+	fullURL := UPLOAD_URL
+	if isFamily {
+		fullURL += "/family"
+	} else {
+		fullURL += "/person"
+	}
+	fullURL += "/getUploadedPartsInfo"
+
+	var resp UploadedPartsInfoResp
+	_, err := y.request(fullURL, http.MethodGet, func(req *resty.Request) {
+		req.SetContext(ctx)
+	}, Params{"uploadFileId": uploadFileID}, &resp, isFamily)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Code != "" && resp.Code != "SUCCESS" {
+		return nil, fmt.Errorf("getUploadedPartsInfo: %s %s", resp.Code, resp.Msg)
+	}
+	uploaded := make(map[int]bool)
+	for _, item := range strings.Split(resp.Data.UploadedPartList, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		n, err := strconv.Atoi(item)
+		if err == nil {
+			uploaded[n] = true
+		}
+	}
+	return uploaded, nil
+}
+
+type v2UploadState struct {
+	Account     string              `json:"account"`
+	DstDirID    string              `json:"dstDirId"`
+	FileMD5     string              `json:"fileMd5"`
+	FileName    string              `json:"fileName"`
+	FileSize    int64               `json:"fileSize"`
+	UploadInfo  InitMultiUploadResp `json:"uploadInfo"`
+	UploadParts []string            `json:"uploadParts"`
+	UpdatedAt   int64               `json:"updatedAt"`
+}
+
+func (y *Cloud189PC) v2StatePath(dstDirID, fileMD5, fileName string, fileSize int64) string {
+	dir := filepath.Join(conf.Conf.TempDir, "189pc-upload-resume")
+	_ = os.MkdirAll(dir, 0o700)
+	key := utils.GetMD5EncodeStr(fmt.Sprintf("v2\x00%s\x00%s\x00%s\x00%s\x00%d", y.resumeAccount(), dstDirID, fileMD5, fileName, fileSize))
+	return filepath.Join(dir, key+".json")
+}
+
+func (y *Cloud189PC) loadV2UploadProgress(dstDirID, fileMD5, fileName string, fileSize int64) *UploadProgress {
+	resumeStoreMu.Lock()
+	defer resumeStoreMu.Unlock()
+
+	path := y.v2StatePath(dstDirID, fileMD5, fileName, fileSize)
+	bs, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var st v2UploadState
+	if err = json.Unmarshal(bs, &st); err != nil {
+		_ = os.Remove(path)
+		return nil
+	}
+	if st.UploadInfo.Data.UploadFileID == "" || st.FileSize != fileSize ||
+		!strings.EqualFold(st.FileMD5, fileMD5) || st.FileName != fileName || st.DstDirID != dstDirID {
+		_ = os.Remove(path)
+		return nil
+	}
+	if st.UpdatedAt > 0 && time.Since(time.Unix(st.UpdatedAt, 0)) > resumeStateTTL {
+		_ = os.Remove(path)
+		return nil
+	}
+	return &UploadProgress{UploadInfo: st.UploadInfo, UploadParts: st.UploadParts}
+}
+
+func (y *Cloud189PC) saveV2UploadProgress(dstDirID, fileMD5, fileName string, fileSize int64, progress *UploadProgress) error {
+	resumeStoreMu.Lock()
+	defer resumeStoreMu.Unlock()
+
+	st := v2UploadState{
+		Account:     y.resumeAccount(),
+		DstDirID:    dstDirID,
+		FileMD5:     fileMD5,
+		FileName:    fileName,
+		FileSize:    fileSize,
+		UploadInfo:  progress.UploadInfo,
+		UploadParts: progress.UploadParts,
+		UpdatedAt:   time.Now().Unix(),
+	}
+	bs, err := json.Marshal(&st)
+	if err != nil {
+		return err
+	}
+	path := y.v2StatePath(dstDirID, fileMD5, fileName, fileSize)
+	tmp := path + ".tmp"
+	if err = os.WriteFile(tmp, bs, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func (y *Cloud189PC) deleteV2UploadProgress(dstDirID, fileMD5, fileName string, fileSize int64) {
+	resumeStoreMu.Lock()
+	defer resumeStoreMu.Unlock()
+	_ = os.Remove(y.v2StatePath(dstDirID, fileMD5, fileName, fileSize))
+}
+
+func uploadPartNumber(partInfo string) int {
+	if idx := strings.IndexByte(partInfo, '-'); idx > 0 {
+		n, _ := strconv.Atoi(partInfo[:idx])
+		return n
+	}
+	return 0
 }
