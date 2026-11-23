@@ -78,6 +78,13 @@ func (y *Cloud189PC) Init(ctx context.Context) (err error) {
 		}
 		if y.AccessToken != "" {
 			err = y.useAccessTokenAndInit(y.AccessToken)
+			if err != nil {
+				if y.Username == "" || y.Password == "" {
+					utils.Log.Warnf("[189pc] accessToken 刷新失败(%v)，且未配置用户名/密码，无法自动重登", err)
+				} else {
+					utils.Log.Warnf("[189pc] accessToken 刷新失败(%v)，改用账号密码重新登录", err)
+				}
+			}
 			if err != nil && y.Username != "" && y.Password != "" {
 				refreshErr := err
 				if loginErr := y.login(); loginErr != nil {

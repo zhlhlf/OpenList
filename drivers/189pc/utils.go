@@ -454,7 +454,10 @@ func (y *Cloud189PC) refreshSession() (err error) {
 		return nil
 	}
 	utils.Log.Debugf("[189pc] refreshSession: PC 方案失败(%v)", pcErr)
-	if y.Username == "" || y.Password == "" || y.loggingIn {
+	if y.Username == "" || y.Password == "" {
+		return fmt.Errorf("刷新会话失败: app=%v; pc=%v（未配置用户名/密码，无法自动账密重登）", appErr, pcErr)
+	}
+	if y.loggingIn {
 		return fmt.Errorf("刷新会话失败: app=%v; pc=%v", appErr, pcErr)
 	}
 

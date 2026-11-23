@@ -408,6 +408,10 @@ func (y *Cloud189PC) login() (err error) {
 	y.updateValue(&y.AccessToken, token)
 	if err = y.refreshSession(); err != nil {
 		utils.Log.Debugf("[189pc] login: 换取会话失败: %v", err)
+		if strings.Contains(err.Error(), "InvalidDeviceStatus") {
+			return fmt.Errorf("账密登录已拿到新 token，但换取会话仍被拒：设备号 %s 已被服务端移出账号设备列表。"+
+				"请到天翼云盘 App 的 设置→账号与安全→登录设备 删除旧的设备记录后重试", y.appDeviceID())
+		}
 		return err
 	}
 	utils.Log.Debugf("[189pc] login: 登录完成, accessToken=%s sessionKey=%s", maskToken(y.AccessToken), y.tokenInfo.SessionKey)
