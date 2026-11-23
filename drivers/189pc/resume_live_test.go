@@ -170,3 +170,97 @@ func TestLiveResumeV2(t *testing.T) {
 		t.Logf("cleanup delete failed: %v", err)
 	}
 }
+
+// 实网测试：同一份内容（同 md5/大小/文件名）传另一个目录时，不能复用旧目录的 uploadFileId。
+// 服务端的目录绑定发生在 initMultiUpload，commitMultiUploadFile 只带 uploadFileId，
+// 所以一旦复用，文件会落进旧目录。
+func TestLiveSameMd5OtherDir(t *testing.T) {
+	token := os.Getenv("S189_AT")
+	if token == "" {
+		t.Skip("S189_AT not set")
+	}
+	conf.Conf = &conf.Config{TempDir: t.TempDir()}
+	base.InitClient()
+
+	y := &Cloud189PC{}
+	y.Addition.AccessToken = token
+	y.Addition.UploadMethod = "rapid"
+	if err := y.Init(context.Background()); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	const size = 12 * 1024 * 1024
+	r := rand.New(rand.NewSource(20261124))
+	data := make([]byte, size)
+	_, _ = r.Read(data)
+	name := fmt.Sprintf("go-dirk-%d.bin", time.Now().UnixNano())
+	sum := md5.Sum(data)
+	md5Hex := fmt.Sprintf("%X", sum[:])
+	mkStream := func() model.FileStreamer {
+		return &stream.FileStream{
+			Ctx:      context.Background(),
+			Obj:      &model.Object{Name: name, Size: size},
+			Reader:   bytes.NewReader(data),
+			Mimetype: "application/octet-stream",
+		}
+	}
+
+	root := &model.Object{ID: "-11"}
+	dirName := fmt.Sprintf("go-dirk-dir-%d", time.Now().UnixNano())
+	other, err := y.MakeDir(context.Background(), root, dirName)
+	if err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	defer func() {
+		if err := y.Remove(context.Background(), other); err != nil {
+			t.Logf("cleanup rmdir failed: %v", err)
+		}
+	}()
+
+	// 在 old 目录（root）传一半后中断，留下 old 目录的会话。
+	ctx, cancel := context.WithCancel(context.Background())
+	_, _, err = y.FastUploadWithInfo(ctx, root, mkStream(), func(p float64) {
+		if p >= 30 {
+			cancel()
+		}
+	}, false, true)
+	cancel()
+	oldState := y.loadV2UploadProgress(root.GetID(), md5Hex, name, size)
+	if oldState == nil {
+		t.Fatalf("expected cached state for root dir")
+	}
+	t.Logf("old dir uploadFileId=%s", oldState.UploadInfo.Data.UploadFileID)
+
+	// 同一文件传到新目录，必须重新 init，并且最终落在新目录。
+	obj, _, err := y.FastUploadWithInfo(context.Background(), other, mkStream(), func(p float64) {}, false, true)
+	if err != nil {
+		t.Fatalf("upload to other dir: %v", err)
+	}
+	t.Logf("uploaded: name=%s id=%s", obj.GetName(), obj.GetID())
+	defer func() {
+		if err := y.Delete(context.Background(), "", obj); err != nil {
+			t.Logf("cleanup delete failed: %v", err)
+		}
+	}()
+
+	if st := y.loadV2UploadProgress(other.GetID(), md5Hex, name, size); st != nil {
+		if st.UploadInfo.Data.UploadFileID == oldState.UploadInfo.Data.UploadFileID {
+			t.Fatalf("new dir reused old uploadFileId %s", st.UploadInfo.Data.UploadFileID)
+		}
+	}
+
+	items, err := y.List(context.Background(), other, model.ListArgs{})
+	if err != nil {
+		t.Fatalf("list other dir: %v", err)
+	}
+	found := false
+	for _, it := range items {
+		if it.GetID() == obj.GetID() {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("uploaded file %s not found in target dir %s", obj.GetID(), other.GetID())
+	}
+	t.Logf("file %s confirmed inside dir %s", obj.GetID(), other.GetID())
+}
