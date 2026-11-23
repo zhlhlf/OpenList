@@ -463,7 +463,9 @@ func (y *Cloud189PC) refreshSessionByApp() error {
 		"networkAccessMode=WIFI",
 		"telecomsOperator=46011",
 		"channelId=nearme",
-		"isCache=1",
+		// must be 0：isCache=1 会让服务端复用缓存的会话/设备状态，设备被踢过之后
+		// 就一直返回 InvalidDeviceStatus；0 是强制重新换一次会话。
+		"isCache=0",
 		"deviceModel=" + APP_LOGIN_MODEL,
 		"jgOpenId=",
 	}, "&")
