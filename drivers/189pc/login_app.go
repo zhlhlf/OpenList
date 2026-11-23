@@ -270,8 +270,9 @@ type appUserSessionResp struct {
 	EAccessToken        string   `xml:"eAccessToken"`
 }
 
+// appDeviceID 固定返回由账号派生的设备号，同一账号永远同一个号。
+// 不提供配置项、也不在失败时更换：换号只会占掉别人的设备槽。
 func (y *Cloud189PC) appDeviceID() string {
-	// 32 位小写 hex，与官方抓包的 deviceId 同形；固定用账号+盐，同一账号各实例一致。
 	return fmt.Sprintf("%x", md5.Sum([]byte(y.Username+"jczhl")))
 }
 

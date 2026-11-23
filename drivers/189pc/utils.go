@@ -460,6 +460,10 @@ func (y *Cloud189PC) refreshSession() (err error) {
 
 	utils.Log.Debugf("[189pc] refreshSession: App/PC 方案均失败, 使用账号密码重新登录")
 	if loginErr := y.login(); loginErr != nil {
+		if strings.Contains(loginErr.Error(), "InvalidDeviceStatus") {
+			return fmt.Errorf("刷新会话失败: 设备号 %s 已被服务端判为无效（账号设备列表里已移除该设备），账密重登也带着同一个号被拒。"+
+				"处理办法：到天翼云盘 App 的 设置→账号与安全→登录设备 里删掉旧的设备记录，再重试", y.appDeviceID())
+		}
 		return fmt.Errorf("刷新会话失败: app=%v; pc=%v; login=%v", appErr, pcErr, loginErr)
 	}
 	if y.GetStorage().ID != 0 {

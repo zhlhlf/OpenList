@@ -79,7 +79,12 @@ func (y *Cloud189PC) Init(ctx context.Context) (err error) {
 		if y.AccessToken != "" {
 			err = y.useAccessTokenAndInit(y.AccessToken)
 			if err != nil && y.Username != "" && y.Password != "" {
-				err = y.login()
+				refreshErr := err
+				if loginErr := y.login(); loginErr != nil {
+					err = fmt.Errorf("刷新会话失败(%v)，账密重新登录也失败: %w", refreshErr, loginErr)
+				} else {
+					err = nil
+				}
 			}
 		} else {
 			identity := utils.GetMD5EncodeStr(y.Username + y.Password)
