@@ -260,6 +260,17 @@ func (y *Cloud189PC) findFileByName(ctx context.Context, searchName string, fold
 	}
 }
 
+// tryWebLogin 调 loginByWeb，吞掉它内部的 panic（网页登录依赖 OpenList 的
+// settings/OCR 上下文，缺上下文时可能空指针），失败只记日志，不影响主流程。
+func (y *Cloud189PC) tryWebLogin() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("网页登录异常: %v", r)
+		}
+	}()
+	return y.loginByWeb()
+}
+
 // loginByWeb 旧的 Web/PC 登录：unifyLoginForPC 取 lt/paramId -> loginSubmit -> getSessionForPC。
 // 现在只作为兜底保留。
 func (y *Cloud189PC) loginByWeb() (err error) {
@@ -454,6 +465,25 @@ func (y *Cloud189PC) refreshSession() (err error) {
 		return nil
 	}
 	utils.Log.Debugf("[189pc] refreshSession: PC 方案失败(%v)", pcErr)
+
+	// App 侧设备状态被服务端判无效时，账密走 app 重新登录也还是同一个设备号；
+	// 网页登录是另一套会话（loginSubmit -> redirectURL -> getSessionForPC），
+	// 不受 app 设备状态限制，先试它。
+	if strings.Contains(appErr.Error(), "InvalidDeviceStatus") &&
+		y.Username != "" && y.Password != "" && !y.loggingIn {
+		utils.Log.Warnf("[189pc] App 设备状态无效，改用网页账密登录")
+		if webErr := y.tryWebLogin(); webErr != nil {
+			utils.Log.Warnf("[189pc] 网页账密登录失败: %v", webErr)
+		} else {
+			utils.Log.Warnf("[189pc] 网页账密登录成功, sessionKey=%s", y.tokenInfo.SessionKey)
+			if y.GetStorage().ID != 0 {
+				y.GetStorage().SetStatus(op.WORK)
+				op.MustSaveDriverStorage(y)
+			}
+			return nil
+		}
+	}
+
 	if y.Username == "" || y.Password == "" {
 		return fmt.Errorf("刷新会话失败: app=%v; pc=%v（未配置用户名/密码，无法自动账密重登）", appErr, pcErr)
 	}
