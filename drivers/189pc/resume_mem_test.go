@@ -29,8 +29,8 @@ func TestSweepResumeMem(t *testing.T) {
 
 	// 把两条都改成 4 天前，模拟过期。
 	resumeStoreMu.Lock()
-	resumeMem[y.legacyStateKey("ABCDEF", "legacy.bin", 1024)].updatedAt = time.Now().Add(-4 * 24 * time.Hour)
-	resumeMem[y.v2StateKey("-11", "ABCDEF", "v2.bin", 2048)].updatedAt = time.Now().Add(-4 * 24 * time.Hour)
+	resumeMem[resumeStateKey("ABCDEF", 1024)].updatedAt = time.Now().Add(-4 * 24 * time.Hour)
+	resumeMem[resumeStateKey("ABCDEF", 2048)].updatedAt = time.Now().Add(-4 * 24 * time.Hour)
 	resumeStoreMu.Unlock()
 
 	y.sweepResumeMem()
