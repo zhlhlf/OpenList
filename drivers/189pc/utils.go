@@ -655,6 +655,7 @@ func (y *Cloud189PC) FastUploadWithInfo(ctx context.Context, dstDir model.Obj, f
 	// 尝试恢复进度：优先使用落盘的 uploadFileId，再向服务端确认已上传分片。
 	// getUploadedPartsInfo 是 v2 分片上传真正可用的进度接口（官方 App 同款）。
 	uploadProgress := y.loadV2UploadProgress(dstDir.GetID(), fileMd5Hex, file.GetName(), size)
+	cacheHit := uploadProgress != nil
 	if uploadProgress == nil {
 		// step.2 预上传
 		params := Params{
@@ -697,6 +698,21 @@ func (y *Cloud189PC) FastUploadWithInfo(ctx context.Context, dstDir model.Obj, f
 				}
 			}
 		}
+	}
+
+	// 命中续传缓存时把分片进度打到 debug 日志：UploadParts 里已上传的项会被置空，
+	// 所以空串数量就是已上传分片数（此时已按服务端 getUploadedPartsInfo 校准过）。
+	if cacheHit {
+		total := len(uploadProgress.UploadParts)
+		uploaded := 0
+		for _, uploadPart := range uploadProgress.UploadParts {
+			if uploadPart == "" {
+				uploaded++
+			}
+		}
+		utils.Log.Debugf("[189pc] 命中上传缓存 %s: 分片 %d/%d 已上传, 云端已存在=%d, fileMd5=%s, uploadFileId=%s",
+			file.GetName(), uploaded, total, uploadInfo.FileDataExists,
+			fileMd5Hex, uploadInfo.UploadFileID)
 	}
 
 	totalParts := len(uploadProgress.UploadParts)

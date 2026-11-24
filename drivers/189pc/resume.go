@@ -272,6 +272,14 @@ func (y *Cloud189PC) ResumeUpload(ctx context.Context, dstDir model.Obj, file mo
 	fileName := file.GetName()
 
 	state := y.loadResumeState(dstDir.GetID(), fileMD5, fileName, size)
+	if state != nil {
+		// 命中续传状态：分片总数按 resumeChunkSize 算，已上传数按上次记录的 UploadedSize 估算，
+		// 真实进度在下面 GetUploadFileStatus 之后还会再打一条。
+		totalChunks := int((size + resumeChunkSize - 1) / resumeChunkSize)
+		uploadedChunks := int((state.UploadedSize + resumeChunkSize - 1) / resumeChunkSize)
+		utils.Log.Debugf("[189pc] 命中续传状态 %s: 分片 %d/%d 已上传(记录), uploadedSize=%d/%d, uploadFileId=%d",
+			fileName, uploadedChunks, totalChunks, state.UploadedSize, size, state.UploadFileID)
+	}
 	if state == nil {
 		info, err := y.legacyCreateUploadFile(ctx, dstDir.GetID(), fileName, fileMD5, size, overwrite)
 		if err != nil {
@@ -312,6 +320,12 @@ func (y *Cloud189PC) ResumeUpload(ctx context.Context, dstDir model.Obj, file mo
 			break
 		}
 		uploaded := status.Size
+		if attempt == 0 {
+			utils.Log.Debugf("[189pc] 续传实际进度 %s: 已上传 %d/%d 字节, 约 %d/%d 分片, dataExists=%d",
+				fileName, uploaded, size,
+				int((uploaded+resumeChunkSize-1)/resumeChunkSize), int((size+resumeChunkSize-1)/resumeChunkSize),
+				status.FileDataExists)
+		}
 		if uploaded == lastUploaded {
 			stuck++
 			if stuck >= 3 {
