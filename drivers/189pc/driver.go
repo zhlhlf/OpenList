@@ -370,6 +370,8 @@ func (y *Cloud189PC) putFile(ctx context.Context, dstDir model.Obj, stream model
 			FileStreamer: stream,
 			Name:         fmt.Sprintf("00-zhlhlf-00--%s.%s", uuid.NewString(), lastPart),
 		}
+		// 续传缓存按原始文件名匹配，避免每次重试的随机临时名导致永不命中
+		ctx = withResumeKeyName(ctx, sourceName)
 
 		// 使用家庭云上传
 		isFamily = true

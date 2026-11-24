@@ -654,8 +654,14 @@ func (y *Cloud189PC) FastUploadWithInfo(ctx context.Context, dstDir model.Obj, f
 	}
 	// 尝试恢复进度：优先使用落盘的 uploadFileId，再向服务端确认已上传分片。
 	// getUploadedPartsInfo 是 v2 分片上传真正可用的进度接口（官方 App 同款）。
-	uploadProgress := y.loadV2UploadProgress(dstDir.GetID(), fileMd5Hex, file.GetName(), size)
+	// 家庭云转存会用随机临时名上传，续传缓存必须按原始文件名匹配
+	keyName := resumeKeyName(ctx, file.GetName())
+	uploadProgress := y.loadV2UploadProgress(dstDir.GetID(), fileMd5Hex, keyName, size)
 	cacheHit := uploadProgress != nil
+	if !cacheHit {
+		utils.Log.Debugf("[189pc] 未找到上传缓存 md5=%s size=%d dirID=%s keyName=%s streamName=%s",
+			fileMd5Hex, size, dstDir.GetID(), keyName, file.GetName())
+	}
 	if uploadProgress == nil {
 		// step.2 预上传
 		params := Params{
@@ -680,8 +686,12 @@ func (y *Cloud189PC) FastUploadWithInfo(ctx context.Context, dstDir model.Obj, f
 			UploadInfo:  uploadInfo,
 			UploadParts: partInfos,
 		}
-		if err = y.saveV2UploadProgress(dstDir.GetID(), fileMd5Hex, file.GetName(), size, uploadProgress); err != nil {
+		if err = y.saveV2UploadProgress(dstDir.GetID(), fileMd5Hex, keyName, size, uploadProgress); err != nil {
 			utils.Log.Warnf("189pc: save upload progress failed: %v", err)
+		} else {
+			utils.Log.Debugf("[189pc] 已保存上传缓存 md5=%s size=%d dirID=%s keyName=%s streamName=%s parts=%d uploadFileId=%s",
+				fileMd5Hex, size, dstDir.GetID(), keyName, file.GetName(),
+				len(uploadProgress.UploadParts), uploadProgress.UploadInfo.Data.UploadFileID)
 		}
 	}
 
@@ -767,10 +777,21 @@ func (y *Cloud189PC) FastUploadWithInfo(ctx context.Context, dstDir model.Obj, f
 		}
 		if err = threadG.Wait(); err != nil {
 			// 中断/失败也落盘，下一次启动按服务端分片结果续传。
-			_ = y.saveV2UploadProgress(dstDir.GetID(), fileMd5Hex, file.GetName(), size, uploadProgress)
+			if serr := y.saveV2UploadProgress(dstDir.GetID(), fileMd5Hex, keyName, size, uploadProgress); serr != nil {
+				utils.Log.Warnf("189pc: save upload progress on abort failed: %v", serr)
+			} else {
+				pending := 0
+				for _, part := range uploadProgress.UploadParts {
+					if part != "" {
+						pending++
+					}
+				}
+				utils.Log.Debugf("[189pc] 中断时已保存上传缓存 keyName=%s streamName=%s 待传分片=%d/%d err=%v",
+					keyName, file.GetName(), pending, len(uploadProgress.UploadParts), err)
+			}
 			return nil, nil, err
 		}
-		_ = y.saveV2UploadProgress(dstDir.GetID(), fileMd5Hex, file.GetName(), size, uploadProgress)
+		_ = y.saveV2UploadProgress(dstDir.GetID(), fileMd5Hex, keyName, size, uploadProgress)
 	}
 
 	// step.5 鎻愪氦

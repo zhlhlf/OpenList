@@ -78,6 +78,26 @@ func (y *Cloud189PC) sweepResumeMem() {
 	sweepResumeMemLocked(time.Now())
 }
 
+// resumeKeyNameCtxKey 用于在“家庭云转存”场景把原始文件名带进上传流程。
+// 该路径上传时用的是随机临时名（00-<user>-00--<uuid>.ext），每次重试都不同，
+// 如果续传缓存用临时名做 key，就永远命不中。
+type resumeKeyNameCtxKey struct{}
+
+func withResumeKeyName(ctx context.Context, name string) context.Context {
+	if name == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, resumeKeyNameCtxKey{}, name)
+}
+
+// resumeKeyName 返回续传缓存应使用的文件名：优先上下文里的原始名，否则用流自带的名字。
+func resumeKeyName(ctx context.Context, fallback string) string {
+	if v, ok := ctx.Value(resumeKeyNameCtxKey{}).(string); ok && v != "" {
+		return v
+	}
+	return fallback
+}
+
 func resumeStateKey(dstDirID, fileMD5, fileName string, fileSize int64) string {
 	return fmt.Sprintf("%s--%d--%s--%s", strings.ToUpper(fileMD5), fileSize, dstDirID, fileName)
 }
