@@ -112,12 +112,16 @@ func Start() {
 	}
 	if conf.Conf.Scheme.HttpPort != -1 {
 		httpBase := fmt.Sprintf("%s:%d", conf.Conf.Scheme.Address, conf.Conf.Scheme.HttpPort)
+		ln, err := net.Listen("tcp", httpBase)
+		if err != nil {
+			utils.Log.Fatalf("failed to listen http %s: %s", httpBase, err.Error())
+		}
 		fmt.Printf("start HTTP server @ %s\n", httpBase)
 		utils.Log.Infof("start HTTP server @ %s", httpBase)
 		httpSrv = &http.Server{Addr: httpBase, Handler: httpHandler}
 		go func() {
 			httpRunning = true
-			err := httpSrv.ListenAndServe()
+			err := httpSrv.Serve(ln)
 			httpRunning = false
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				handleEndpointStartFailedHooks("http", err)
@@ -129,12 +133,16 @@ func Start() {
 	}
 	if conf.Conf.Scheme.HttpsPort != -1 {
 		httpsBase := fmt.Sprintf("%s:%d", conf.Conf.Scheme.Address, conf.Conf.Scheme.HttpsPort)
+		ln, err := net.Listen("tcp", httpsBase)
+		if err != nil {
+			utils.Log.Fatalf("failed to listen https %s: %s", httpsBase, err.Error())
+		}
 		fmt.Printf("start HTTPS server @ %s\n", httpsBase)
 		utils.Log.Infof("start HTTPS server @ %s", httpsBase)
 		httpsSrv = &http.Server{Addr: httpsBase, Handler: r}
 		go func() {
 			httpsRunning = true
-			err := httpsSrv.ListenAndServeTLS(conf.Conf.Scheme.CertFile, conf.Conf.Scheme.KeyFile)
+			err := httpsSrv.ServeTLS(ln, conf.Conf.Scheme.CertFile, conf.Conf.Scheme.KeyFile)
 			httpsRunning = false
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				handleEndpointStartFailedHooks("https", err)
@@ -168,15 +176,14 @@ func Start() {
 		}
 	}
 	if conf.Conf.Scheme.UnixFile != "" {
+		listener, err := net.Listen("unix", conf.Conf.Scheme.UnixFile)
+		if err != nil {
+			utils.Log.Fatalf("failed to listen unix %s: %+v", conf.Conf.Scheme.UnixFile, err)
+		}
 		fmt.Printf("start unix server @ %s\n", conf.Conf.Scheme.UnixFile)
 		utils.Log.Infof("start unix server @ %s", conf.Conf.Scheme.UnixFile)
 		unixSrv = &http.Server{Handler: httpHandler}
 		go func() {
-			listener, err := net.Listen("unix", conf.Conf.Scheme.UnixFile)
-			if err != nil {
-				utils.Log.Errorf("failed to listen unix: %+v", err)
-				return
-			}
 			unixRunning = true
 			// set socket file permission
 			mode, err := strconv.ParseUint(conf.Conf.Scheme.UnixFilePerm, 8, 32)
@@ -203,6 +210,10 @@ func Start() {
 		s3r.Use(gin.LoggerWithWriter(log.StandardLogger().Out), gin.RecoveryWithWriter(log.StandardLogger().Out))
 		server.InitS3(s3r)
 		s3Base := fmt.Sprintf("%s:%d", conf.Conf.Scheme.Address, conf.Conf.S3.Port)
+		ln, err := net.Listen("tcp", s3Base)
+		if err != nil {
+			utils.Log.Fatalf("failed to listen s3 %s: %s", s3Base, err.Error())
+		}
 		fmt.Printf("start S3 server @ %s\n", s3Base)
 		utils.Log.Infof("start S3 server @ %s", s3Base)
 		go func() {
@@ -210,10 +221,10 @@ func Start() {
 			var err error
 			if conf.Conf.S3.SSL {
 				s3Srv = &http.Server{Addr: s3Base, Handler: s3r}
-				err = s3Srv.ListenAndServeTLS(conf.Conf.Scheme.CertFile, conf.Conf.Scheme.KeyFile)
+				err = s3Srv.ServeTLS(ln, conf.Conf.Scheme.CertFile, conf.Conf.Scheme.KeyFile)
 			} else {
 				s3Srv = &http.Server{Addr: s3Base, Handler: s3r}
-				err = s3Srv.ListenAndServe()
+				err = s3Srv.Serve(ln)
 			}
 			s3Running = false
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
